@@ -11,20 +11,17 @@
 
 namespace mono_synth {
 
-// ----------------------------------------------------------------------
-// pre/post-execution functions for the parallel program
-//-----------------------------------------------------------------------
-/* a post-back function to save the controller/abstraction after the kernel finishes */
+
+/* a call-back function to save the controller/abstraction after the kernel finishes */
 size_t pfacesKernel_mono_synth::saveData(const pfaces2DKernel& thisKernel,  const pfacesParallelProgram& thisParallelProgram, std::vector<std::shared_ptr<void>>& postExecuteParamsList) {
 	
-	// unboxing one passed extra param
-	std::shared_ptr<bool> spIsMemoryEfficientVersion = std::static_pointer_cast<bool>(postExecuteParamsList[0]);
+	// unboxing the passed param
+	bool spIsMemoryEfficientVersion = *std::static_pointer_cast<bool>(postExecuteParamsList[0]);
 
 	// retrieving the required values
 	char*					pData					= thisParallelProgram.m_dataPool[0].first;
 	std::string				outPath					= pfacesFileIO::getFileDirectoryPath(thisParallelProgram.m_spCfgReader->getConfigFilePath()) + std::string(((pfacesKernel_mono_synth*)(&thisKernel))->m_spCfg->getProjectName());
 	size_t					beVerboseLevel			= thisParallelProgram.m_beVerboseLevel;
-	
 	std::string				strDataImplementation	= ((pfacesKernel_mono_synth*)(&thisKernel))->m_spCfg->getDataImplementationtype();
 	bool					isSaveTransitions		= ((pfacesKernel_mono_synth*)(&thisKernel))->m_spCfg->isSaveTransitions();
 	bool					isSaveController		= ((pfacesKernel_mono_synth*)(&thisKernel))->m_spCfg->isSaveController();
@@ -45,28 +42,22 @@ size_t pfacesKernel_mono_synth::saveData(const pfaces2DKernel& thisKernel,  cons
 	std::string				avoids					= ((pfacesKernel_mono_synth*)(&thisKernel))->m_spCfg->getAvoidData();
 	std::string				safes					= ((pfacesKernel_mono_synth*)(&thisKernel))->m_spCfg->getSafeData();
 	size_t					maxPostsCount			= ((pfacesKernel_mono_synth*)(&thisKernel))->m_spCfg->getMaxPosts();
-	size_t					bagSize					= RW_bag::getSizeBytes({(double)ssDim,(double)isDim, (double)maxPostsCount}, *spIsMemoryEfficientVersion);
+	size_t					bagSize					= RW_bag::getSizeBytes({(double)ssDim,(double)isDim, (double)maxPostsCount}, spIsMemoryEfficientVersion);
 	std::string				usedKernelName			= thisKernel.getKernelName();
 
+	// nothing required ?
+	if (!isSaveTransitions && !isSaveController) {
+		return 0;
+	}
+
+	// collecting X and U width per dimension
 	std::vector<symbolic_t> X_widthPerDimension;
 	std::vector<symbolic_t> U_widthPerDimension;
-
-	DataFileType file_type;
-	std::string filePath;
-
-	// nothing required ?
-	if (!isSaveTransitions && !isSaveController)
-		return 0;
-
-	// reading some vals
-	pfacesFlatSpace::getFlatWidthFromConcreteSpace(ssDim, ssEta, ssLb, ssUb, ssErr, 
-		X_widthPerDimension);
-	pfacesFlatSpace::getFlatWidthFromConcreteSpace(isDim, isEta, isLb, isUb, isErr, 
-		U_widthPerDimension);
+	pfacesFlatSpace::getFlatWidthFromConcreteSpace(ssDim, ssEta, ssLb, ssUb, ssErr, X_widthPerDimension);
+	pfacesFlatSpace::getFlatWidthFromConcreteSpace(isDim, isEta, isLb, isUb, isErr, U_widthPerDimension);
 
 	// building the controller meta-data header
 	StringDataDictionary metadata;
-
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_SAMPLING_PERIOD, std::to_string(tau)));
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_SS_DIMENSION, std::to_string(ssDim)));
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_IS_DIMENSION, std::to_string(isDim)));
@@ -82,8 +73,6 @@ size_t pfacesKernel_mono_synth::saveData(const pfaces2DKernel& thisKernel,  cons
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_IS_STEPS, pfacesUtils::vector2string<symbolic_t>(U_widthPerDimension)));
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_POST_USE_ODE, (((pfacesKernel_mono_synth*)(&thisKernel))->m_spCfg->getUseOdePost())?"1":"0"));
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_RADIUS_USE_ODE, (((pfacesKernel_mono_synth*)(&thisKernel))->m_spCfg->getUseOdeRadius()) ? "1" : "0"));
-	
-
 	for (size_t i = 0; i < ssDim; i++)
 	{
 		metadata.push_back(
@@ -96,7 +85,6 @@ size_t pfacesKernel_mono_synth::saveData(const pfaces2DKernel& thisKernel,  cons
 			)
 		);
 	}
-
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_X_WIDTH, std::to_string(xWidth)));
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_U_WIDTH, std::to_string(uWidth)));
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_XU_BAG_SIZE, std::to_string(bagSize)));
@@ -104,14 +92,15 @@ size_t pfacesKernel_mono_synth::saveData(const pfaces2DKernel& thisKernel,  cons
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_CONCRETE_SIZE, std::to_string(sizeof(concrete_t))));
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_SYMBOLIC_NAME, std::string(symbolic_t_cl_string)));
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_SYMBOLIC_SIZE, std::to_string(sizeof(symbolic_t))));
-	if(!targets.empty())
+	if(!targets.empty()) {
 		metadata.push_back(std::make_pair(OUT_FILE_PARAM_TARGET_SETS, targets));
-	if (!avoids.empty())
+	}
+	if (!avoids.empty()) {
 		metadata.push_back(std::make_pair(OUT_FILE_PARAM_AVOID_SETS, avoids));
-	if (!safes.empty())
+	}
+	if (!safes.empty()) {
 		metadata.push_back(std::make_pair(OUT_FILE_PARAM_SAFE_SETS, safes));
-		
-	// used kernel name
+	}
 	metadata.push_back(std::make_pair(OUT_FILE_PARAM_USED_KERNEL_NAME, usedKernelName));
 
 	// Informing the user we are saving
@@ -126,30 +115,28 @@ size_t pfacesKernel_mono_synth::saveData(const pfaces2DKernel& thisKernel,  cons
 	}
 	
 	// Saving the controller based on the required data type
-	file_type = pfacesDataFile::getTypeFromString(strDataImplementation);
-	if(file_type == DataFileType::DATA_FILE_INVALID)
-		throw std::runtime_error("Invalid data model for saving abstraction/controller.");
+	DataFileType file_type = pfacesDataFile::getTypeFromString(strDataImplementation);
 
-	filePath = outPath + pfacesDataFile::getTypeDefaultExtension(file_type);
+	if (file_type == DataFileType::DATA_FILE_INVALID) {
+		throw std::runtime_error("Invalid data model for saving abstraction/controller.");
+	}
 
 	pfacesRawData rawData(pData, xWidth*uWidth*bagSize);
-
+	std::string filePath = outPath + pfacesDataFile::getTypeDefaultExtension(file_type);
 	bool writeFileStatus = true;
 	if (file_type == DataFileType::DATA_FILE_RAW) {
 		metadata.push_back(std::make_pair(OUT_FILE_PARAM_CONTENT, std::string(OUT_FILE_CONTENT_ABSTRACTION_AND_CONTROLLER)));
-		writeFileStatus = pfacesDataFile::writeData(filePath, file_type,
-			rawData, metadata, beVerboseLevel >= 2);
-	}
-	else {
+		writeFileStatus = pfacesDataFile::writeData(filePath, file_type, rawData, metadata, beVerboseLevel >= 2);
+	} else {
 
 		size_t bagSizeInBits = bagSize * 8;
 		size_t controllerBitOffset;
 		
-		if(*spIsMemoryEfficientVersion)
+		if (spIsMemoryEfficientVersion) {
 			controllerBitOffset = RW_BAG_CONTROLLER_BIT_INDEX_IN_FLAGS;
-		else
+		} else {
 			controllerBitOffset = 2 * 8 * ssDim * sizeof(concrete_t) + RW_BAG_CONTROLLER_BIT_INDEX_IN_FLAGS;
-
+		}
 
 		if (isSaveController) {
 			StringDataDictionary controllerMetadata = metadata;
@@ -164,9 +151,8 @@ size_t pfacesKernel_mono_synth::saveData(const pfaces2DKernel& thisKernel,  cons
 	}
 
 
-	if (!writeFileStatus) {
-		if (beVerboseLevel >= 2)
-			std::cout << "failed!";
+	if (!writeFileStatus && beVerboseLevel >= 2) {
+		std::cout << "failed!";
 	}
 
 	if (beVerboseLevel >= 2) {
@@ -183,7 +169,7 @@ std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_
 	std::vector<std::string> paramvals;
 
 	///TODO: update this from parallel advisor if possible
-	bool enforceOpenCLUseDouble = false;
+	const bool enforceOpenCLUseDouble = false;
 
 	/* max posts */
 	params.push_back(param_max_posts);
@@ -191,29 +177,33 @@ std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_
 
 	/* use ode post */
 	std::string def_ode_post = "";
-	if (m_spCfg->getUseOdePost())
+	if (m_spCfg->getUseOdePost()) {
 		def_ode_post = "#define USE_ODE_SOLVER_POST";
+	}
 	params.push_back(param_use_ode_post);
 	paramvals.push_back(def_ode_post);
 
 	/* use ode radius*/
 	std::string def_use_radius = "";
-	if (m_spCfg->getUseOdeRadius())
+	if (m_spCfg->getUseOdeRadius()) {
 		def_use_radius = "#define USE_ODE_SOLVER_RADIUS";
+	}
 	params.push_back(param_use_ode_radius);
 	paramvals.push_back(def_use_radius);
 
 	/* use code only for posts */
 	std::string def_codeonly_post = "";
-	if (m_spCfg->getCodeOnlyPost())
+	if (m_spCfg->getCodeOnlyPost()) {
 		def_codeonly_post = "#define USE_CODE_ONLY_POST";
+	}
 	params.push_back(param_code_only_post);
 	paramvals.push_back(def_codeonly_post);
 
 	/* use code only for radius */
 	std::string def_codeonly_radius = "";
-	if (m_spCfg->getCodeOnlyRadius())
+	if (m_spCfg->getCodeOnlyRadius()) {
 		def_codeonly_radius = "#define USE_CODE_ONLY_RADIUS";
+	}
 	params.push_back(param_code_only_radius);
 	paramvals.push_back(def_codeonly_radius);
 
@@ -235,8 +225,9 @@ std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_
 
 	/* enforce use double for OpenCL 1.2 */
 	std::string def_use_double = "";
-	if (enforceOpenCLUseDouble)
+	if (enforceOpenCLUseDouble) {
 		def_use_double = "#pragma OPENCL EXTENSION cl_khr_fp64 : enable";
+	}
 	params.push_back(param_def_use_double);
 	paramvals.push_back(def_use_double);
 
@@ -309,10 +300,9 @@ std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_
 	/* Extra include file */
 	params.push_back(param_extra_include);
 	std::string extra_include_file = m_spCfg->getExtraIncludeFile();
-	if(extra_include_file.empty() || extra_include_file == ""){
+	if (extra_include_file.empty() || extra_include_file == "") {
 		paramvals.push_back("");
-	}
-	else{
+	} else {
 		std::string extra_include = std::string("#include \"") + extra_include_file + std::string("\"");
 		paramvals.push_back(extra_include);
 	}
@@ -351,9 +341,7 @@ std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_
 
 		params.push_back(param_target_data);
 		paramvals.push_back(m_spCfg->getTargetData());
-	}
-	else
-	{
+	} else {
 		params.push_back(param_has_target);
 		paramvals.push_back("");
 
@@ -374,9 +362,7 @@ std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_
 
 		params.push_back(param_safe_data);
 		paramvals.push_back(m_spCfg->getSafeData());
-	}
-	else
-	{
+	} else {
 		params.push_back(param_has_safe);
 		paramvals.push_back("");
 
@@ -397,9 +383,7 @@ std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_
 
 		params.push_back(param_avoid_data);
 		paramvals.push_back(m_spCfg->getAvoidData());
-	}
-	else
-	{
+	} else {
 		params.push_back(param_has_avoid);
 		paramvals.push_back("");
 
@@ -437,7 +421,9 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 
 	// Convert concrete space into flat space for U
 	u_flat_width = pfacesFlatSpace::getFlatWidthFromConcreteSpace(
-		m_spCfg->getIsDim(), m_spCfg->getIsEta(), m_spCfg->getIsLb(), m_spCfg->getIsUb(), m_spCfg->getIsErr(), U_widthPerDimension);
+		m_spCfg->getIsDim(), m_spCfg->getIsEta(), 
+		m_spCfg->getIsLb(), m_spCfg->getIsUb(), 
+		m_spCfg->getIsErr(), U_widthPerDimension);
 
 	// Estimate the size of the bigint needed
 	bigint_size = pfacesBigInt::getBlkCount(pfacesBigInt::Max(x_flat_width, u_flat_width));
@@ -511,15 +497,15 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	}
 	if(m_kernelScope == KERNEL_SCOPE_GPU || m_kernelScope == KERNEL_SCOPE_GMEM) {
 
-		if (beVerboseLevel >= 2)
+		if (beVerboseLevel >= 2) {
 			pfacesTerminal::showInfoMessage("We activate NON-STRICT mode for GPU kernels to mach the GPU PEs.");
+		}
 
 		perDevAbstractionJobs = parallelAdvisor.distributeJob(
 			*this, KERNEL_MONO_SYNTH_ASTRACT_FUNC_IDX, ndProcessRangeXU, ndProcessOffsetXU,
 			parallelProgram.m_isFixedJobDistribution, 
 			parallelProgram.m_fixedJobDistribution, true, false, false);
-	}
-	else {		
+	} else {		
 
 		perDevAbstractionJobs = parallelAdvisor.distributeJob(
 			*this, KERNEL_MONO_SYNTH_ASTRACT_FUNC_IDX, ndProcessRangeXU, ndProcessOffsetXU,
@@ -580,7 +566,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 
 	// preparing sub-buffer info for the all functions - at arg index 1 ! 
 	// remember arg-0 and arg-2 are not buffered
-	if(parallelProgram.countTargetDevices() > 1){
+	if (parallelProgram.countTargetDevices() > 1) {
 		perDevAbstractionJob_XUBAG_LOCAL_SubBuffers = getSubBuffers(perDevAbstractionJobs, KERNEL_MONO_SYNTH_ASTRACT_FUNC_IDX, KERNEL_MONO_SYNTH_ASTRACT_FUNCARG_XUBAG_LOCAL, memReport.bufferFinalSize[0], problem_u_width);
 
 		// printing the sub-buffering report
@@ -624,16 +610,18 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	// if not using the direct access to host memory, we add this instruction
 	// to write the data from the host memory to the device memory and followed by
 	// a barrier to sync among all device threads
-	if(!parallelProgram.m_useHostMemory){
+	if (!parallelProgram.m_useHostMemory) {
 		instructionList.push_back(instr_writeAllData);
 
-		if(parallelProgram.countTargetDevices() > 1)
+		if (parallelProgram.countTargetDevices() > 1) {
 			instructionList.push_back(instr_BlockingSyncPoint);
+		}
 	}
 
 	// Turn Logs on ?
-	if (parallelProgram.m_oclDebug)
+	if (parallelProgram.m_oclDebug) {
 		instructionList.push_back(instr_LogOn);
+	}
 
 	// The first main task: ABSTRACTION
 	for (size_t i = 0; i < perDevAbstractionJobs.size(); i++) {
@@ -654,12 +642,14 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	}
 
 	// A Barrier to force all devices to finish.
-	if (parallelProgram.countTargetDevices() > 1)
+	if (parallelProgram.countTargetDevices() > 1) {
 		instructionList.push_back(instr_BlockingSyncPoint);
+	}
 
 	// Turn Log off if it was turned on !
-	if (parallelProgram.m_oclDebug)
+	if (parallelProgram.m_oclDebug) {
 		instructionList.push_back(instr_LogOff);
+	}
 
 	// Notify the user that abstraction is complete
 	if (beVerboseLevel >= 2) {
@@ -667,11 +657,9 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 		instructionList.push_back(instr_MsgAbsComplete);
 	}
 
-
 	// Read results
 	instructionList.push_back(instr_readAllData);
 	instructionList.push_back(instr_BlockingSyncPoint);
-
 
 	/* writing to RO_bag :: the bases */
 	///TODO: Make this as as WriteFromHost Job
@@ -703,8 +691,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 		std::shared_ptr<bool> spIsMemEfficient = std::make_shared<bool>(true);
 		std::shared_ptr<void> casted = std::static_pointer_cast<void>(spIsMemEfficient);
 		postExecuteParams.push_back(casted);
-	}
-	else{
+	} else {
 		std::shared_ptr<bool> spIsMemEfficient = std::make_shared<bool>(false);
 		std::shared_ptr<void> casted = std::static_pointer_cast<void>(spIsMemEfficient);
 		postExecuteParams.push_back(casted);
