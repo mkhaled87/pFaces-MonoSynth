@@ -235,7 +235,7 @@ private:
   /* per-job per-task sub-buffer info for the jobs referenced in the parallel program*/
   std::vector<std::pair<size_t, size_t>> perDevAbstractionJob_XUBAG_LOCAL_SubBuffers;
 
-  // Instructions for the parallel program
+  /* instructions for the parallel program */
   std::vector<std::shared_ptr<pfacesInstruction>> instructionList;
   std::shared_ptr<pfacesInstruction> instr_BlockingSyncPoint = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_LogOn = std::make_shared<pfacesInstruction>();
@@ -248,13 +248,23 @@ private:
   std::vector<std::shared_ptr<void>> postExecuteParams;
 
 public:
-  pfacesKernel_mono_synth(
-    const std::shared_ptr<pfacesKernelLaunchState>& spLaunchState,
-    const std::shared_ptr<pfacesConfigurationReader>& spCfg);
+  /* constructor */
+  pfacesKernel_mono_synth(const std::shared_ptr<pfacesKernelLaunchState>& spLaunchState, const std::shared_ptr<pfacesConfigurationReader>& spCfg);
+
+  /* destructor */
   ~pfacesKernel_mono_synth() = default;
 
+  /* pFaces program configuration */
   void configureParallelProgram(pfacesParallelProgram& parallelProgram);
+
+  /* pFaces program tuning configuration */
   void configureTuneParallelProgram(pfacesParallelProgram& tuneParallelProgram, size_t targetFunctionIdx);
+
+  /* a post-back function to save the controller/abstraction after the kernel finishes */
+  static size_t saveData(const pfaces2DKernel& thisKernel,  const pfacesParallelProgram& thisParallelProgram, std::vector<std::shared_ptr<void>>& postExecuteParamsList);
+
+  /* providing implementation of the virtual method: getParameterList*/
+  std::pair<std::vector<std::string>, std::vector<std::string>> getParameterList();
 
   /* the configuration reader */
   const std::shared_ptr<configReader> m_spCfg;
@@ -262,8 +272,10 @@ public:
   /* the scope of the kernel */
   std::string m_kernelScope;
 
-  // problem size
+  /* problem size : X cardinality for each dimension */
   std::vector<symbolic_t> X_widthPerDimension;
+
+  /* problem size : U cardinality for each dimension */
   std::vector<symbolic_t> U_widthPerDimension;
 };
 

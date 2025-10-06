@@ -9,13 +9,13 @@
 
 #include "pfacesKernel_mono_synth.h"
 
-namespace mono_synth{
+namespace mono_synth {
 
 // ----------------------------------------------------------------------
 // pre/post-execution functions for the parallel program
 //-----------------------------------------------------------------------
 /* a post-back function to save the controller/abstraction after the kernel finishes */
-size_t saveData(const pfaces2DKernel& thisKernel,  const pfacesParallelProgram& thisParallelProgram, std::vector<std::shared_ptr<void>>& postExecuteParamsList) {
+size_t pfacesKernel_mono_synth::saveData(const pfaces2DKernel& thisKernel,  const pfacesParallelProgram& thisParallelProgram, std::vector<std::shared_ptr<void>>& postExecuteParamsList) {
 	
 	// unboxing one passed extra param
 	std::shared_ptr<bool> spIsMemoryEfficientVersion = std::static_pointer_cast<bool>(postExecuteParamsList[0]);
@@ -177,94 +177,13 @@ size_t saveData(const pfaces2DKernel& thisKernel,  const pfacesParallelProgram& 
 }
 
 
-/*********************************************************/
-/** pfacesKernel_mono_synth ******************************/
-/*********************************************************/
-/* the constructor: initiate data and prepare memory maps*/
-pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKernelLaunchState>& spLaunchState, const std::shared_ptr<pfacesConfigurationReader>& spCfg)
-	: pfaces2DKernel(spLaunchState->getDefaultSourceFilePath(KERNEL_NAME_MONO_SYNTH)),
-	  m_spCfg(std::make_shared<configReader>(spCfg)) {
-
-	bool enforceOpenCLUseDouble = false; //TODO: update this from parallel advisor;
-	m_kernelScope = spLaunchState->getKernelScope();
-
-	// setting the dimensions of the base 2d kernel object
-	size_t ssDim = m_spCfg->getSsDim();
-	size_t isDim = m_spCfg->getIsDim();
-	setDimensions(ssDim, isDim);
-
-	// Convert concrete space into flat space for X
-	x_flat_width = pfacesFlatSpace::getFlatWidthFromConcreteSpace(
-		m_spCfg->getSsDim(), m_spCfg->getSsEta(), 
-		m_spCfg->getSsLb(), m_spCfg->getSsUb(), 
-		m_spCfg->getSsErr(), X_widthPerDimension);
-
-	// Convert concrete space into flat space for U
-	u_flat_width = pfacesFlatSpace::getFlatWidthFromConcreteSpace(
-		m_spCfg->getIsDim(), m_spCfg->getIsEta(), m_spCfg->getIsLb(), m_spCfg->getIsUb(), m_spCfg->getIsErr(), U_widthPerDimension);
-
-	// Estimate the size of the bigint needed
-	bigint_size = pfacesBigInt::getBlkCount(pfacesBigInt::Max(x_flat_width, u_flat_width));
-	bigint_size_bytes = bigint_size*flat_t_cl_numbytes;;
-
-	// 
-	size_t maxPostsCount = m_spCfg->getMaxPosts();
-
-	bool isMemoryEfficientVersion = false;
-	if (m_kernelScope == KERNEL_SCOPE_GMEM || m_kernelScope == KERNEL_SCOPE_CMEM)
-		isMemoryEfficientVersion = true;
-
-	// Kernel Functions definition
-	//------------------------------------------------------------
-	pfacesKernelFunctionArguments memFingerprint_abstract;
-															// xu_bag_global												// xu_bag_local													//ro_bag
-	std::vector<bool>	abstract_directionWriteOrRead		= { false														,false															,true};
-	std::vector<bool>	abstract_HostDoWrite				= { false														,false															,true};
-	std::vector<bool>	abstract_HostDoRead					= { false														,false															,false};
-	std::vector<size_t>	abstract_memAccessFlag				= { CL_MEM_READ_WRITE											,CL_MEM_READ_WRITE												,CL_MEM_READ_ONLY};
-	std::vector<size_t>	abstract_baseTypeSize				= { RW_bag::getSizeBytes({(double)ssDim,(double)isDim,(double)maxPostsCount}, isMemoryEfficientVersion)	,RW_bag::getSizeBytes({(double)ssDim,(double)isDim,(double)maxPostsCount}, isMemoryEfficientVersion)		,RO_bag::getSizeBytes({(double)bigint_size_bytes})};
-	std::vector<size_t>	abstract_baseTypeMultiple			= { 1															,1																,1};
-	std::vector<size_t>	abstract_baseTypeStateDimMultiple	= { 0															,0																,0};
-	std::vector<size_t>	abstract_baseTypeInputDimMultiple	= { 0															,0																,0};
-	std::vector<bool>	abstract_deviceMultiple				= { false														,false															,false};
-	std::vector<bool> 	abstract_isGlobalMemory				= { true														,true															,false};
-	std::vector<bool> 	abstract_isConstantMemory			= { false														,false															,true};
-	std::vector<bool> 	abstract_isLocalMemory				= { false														,false															,false};
-	std::vector<bool> 	abstract_isRangeScalable			= { true														,true															,false};
-	std::vector<bool> 	abstract_isNewOrResident			= { true														,false															,true};
-	std::vector<int> 	abstract_residentFuncIdx			= { -1															,KERNEL_MONO_SYNTH_ASTRACT_FUNC_IDX									, -1};
-	std::vector<int> 	abstract_residentFuncArgIdx			= { -1															,KERNEL_MONO_SYNTH_ASTRACT_FUNCARG_XUBAG_GLOBAL						, -1};
-	std::vector<bool> 	abstract_requiresSubBuffering		= { false														,true															,false};
-	std::vector<bool> 	abstract_equalSubBufferSizes		= { false														,false															,false };
-
-	memFingerprint_abstract.m_name = { "XU_bag_process", "XU_bag_local", "RO_bag" };
-	memFingerprint_abstract.m_equalSubBufferSizes = abstract_equalSubBufferSizes;
-	memFingerprint_abstract.m_residentFuncIdx = abstract_residentFuncIdx;
-	memFingerprint_abstract.m_residentFuncArgIdx = abstract_residentFuncArgIdx;
-	memFingerprint_abstract.m_requiresSubBuffering = abstract_requiresSubBuffering;
-	memFingerprint_abstract.m_directionWriteOrRead = abstract_directionWriteOrRead;
-	memFingerprint_abstract.m_HostDoWrite = abstract_HostDoWrite;
-	memFingerprint_abstract.m_HostDoRead = abstract_HostDoRead;
-	memFingerprint_abstract.m_memAccessFlag = abstract_memAccessFlag;
-	memFingerprint_abstract.m_baseTypeSize = abstract_baseTypeSize;
-	memFingerprint_abstract.m_baseTypeMultiple = abstract_baseTypeMultiple;
-	memFingerprint_abstract.m_deviceMultiple = abstract_deviceMultiple;
-	memFingerprint_abstract.m_baseTypeXDimMultiple = abstract_baseTypeStateDimMultiple;
-	memFingerprint_abstract.m_baseTypeYDimMultiple = abstract_baseTypeInputDimMultiple;
-	memFingerprint_abstract.m_isGlobalMemory = abstract_isGlobalMemory;
-	memFingerprint_abstract.m_isConstantMemory = abstract_isConstantMemory;
-	memFingerprint_abstract.m_isLocalMemory = abstract_isLocalMemory;
-	memFingerprint_abstract.m_isRangeScalable = abstract_isRangeScalable;
-	memFingerprint_abstract.m_isNewOrResident = abstract_isNewOrResident;
-
-	pfacesKernelFunction abstractFunction("abstract", memFingerprint_abstract);
-	addKernelFunction(abstractFunction);
-
-
-	// Updating the params
-	//------------------------------------------------------------
+std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_synth::getParameterList() {
+	
 	std::vector<std::string> params;
 	std::vector<std::string> paramvals;
+
+	///TODO: update this from parallel advisor if possible
+	bool enforceOpenCLUseDouble = false;
 
 	/* max posts */
 	params.push_back(param_max_posts);
@@ -323,9 +242,9 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 
 	/* X and U dimensions */
 	params.push_back(param_ss_dim);
-	paramvals.push_back(std::to_string(ssDim));
+	paramvals.push_back(std::to_string(m_spCfg->getSsDim()));
 	params.push_back(param_is_dim);
-	paramvals.push_back(std::to_string(isDim));
+	paramvals.push_back(std::to_string(m_spCfg->getIsDim()));
 
 	/* X params : Eta */
 	std::stringstream ss_eta_ss;
@@ -387,7 +306,6 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	params.push_back(param_tau);
 	paramvals.push_back(std::to_string(m_spCfg->getSamplingPeriod()));
 
-
 	/* Extra include file */
 	params.push_back(param_extra_include);
 	std::string extra_include_file = m_spCfg->getExtraIncludeFile();
@@ -399,7 +317,6 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 		paramvals.push_back(extra_include);
 	}
 		
-
 	/* Post dynamics : initial code */
 	params.push_back(param_postdynamics_initcode);
 	paramvals.push_back(m_spCfg->getPostDynamicsInitCodeOpenCL());
@@ -423,7 +340,6 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	/* radius dynamics : finish code */
 	params.push_back(param_radiusdynamics_finishcode);
 	paramvals.push_back(m_spCfg->getGrowthDynamicsFinishCodeOpenCL());
-
 
 	/* Specification: target set */
 	if (m_spCfg->isHasTarget()) {
@@ -494,8 +410,66 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 		paramvals.push_back("");
 	}
 
+	return std::make_pair(params, paramvals);
+}
+
+
+/*********************************************************/
+/** pfacesKernel_mono_synth ******************************/
+/*********************************************************/
+/* the constructor: initiate data and prepare memory maps*/
+pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKernelLaunchState>& spLaunchState, const std::shared_ptr<pfacesConfigurationReader>& spCfg)
+	: pfaces2DKernel(spLaunchState->getDefaultSourceFilePath(KERNEL_NAME_MONO_SYNTH)),
+	  m_spCfg(std::make_shared<configReader>(spCfg)) {
+
+	m_kernelScope = spLaunchState->getKernelScope();
+
+	// setting the dimensions of the base 2d kernel object
+	size_t ssDim = m_spCfg->getSsDim();
+	size_t isDim = m_spCfg->getIsDim();
+	setDimensions(ssDim, isDim);
+
+	// Convert concrete space into flat space for X
+	x_flat_width = pfacesFlatSpace::getFlatWidthFromConcreteSpace(
+		m_spCfg->getSsDim(), m_spCfg->getSsEta(), 
+		m_spCfg->getSsLb(), m_spCfg->getSsUb(), 
+		m_spCfg->getSsErr(), X_widthPerDimension);
+
+	// Convert concrete space into flat space for U
+	u_flat_width = pfacesFlatSpace::getFlatWidthFromConcreteSpace(
+		m_spCfg->getIsDim(), m_spCfg->getIsEta(), m_spCfg->getIsLb(), m_spCfg->getIsUb(), m_spCfg->getIsErr(), U_widthPerDimension);
+
+	// Estimate the size of the bigint needed
+	bigint_size = pfacesBigInt::getBlkCount(pfacesBigInt::Max(x_flat_width, u_flat_width));
+	bigint_size_bytes = bigint_size*flat_t_cl_numbytes;;
+
+
+	// Checking if we are using memory efficient version
+	bool isMemoryEfficientVersion = false;
+	if (m_kernelScope == KERNEL_SCOPE_GMEM || m_kernelScope == KERNEL_SCOPE_CMEM)
+		isMemoryEfficientVersion = true;
+
+	// Loading the memory fingerprint of the abstract function
+	auto abstractFunctionArgs = pfacesKernelFunctionArguments::loadFromFile(
+		spLaunchState->getKernelPackPath() + "mono_synth.mem",	/* memory config file with the function memory fingerprint */
+		KERNEL_MONO_SYNTH_ASTRACT_FUNC_NAME,  					/* name of the function to add */
+		{ "XU_bag_process", "XU_bag_local", "RO_bag" },			/* list of the names of its args */
+		false													/* do not save memory render files */
+	);
+	abstractFunctionArgs.m_baseTypeSize = {
+		RW_bag::getSizeBytes({(double)ssDim,(double)isDim,(double)m_spCfg->getMaxPosts()}, isMemoryEfficientVersion),
+		RW_bag::getSizeBytes({(double)ssDim,(double)isDim,(double)m_spCfg->getMaxPosts()}, isMemoryEfficientVersion),
+		RO_bag::getSizeBytes({(double)bigint_size_bytes})
+	};
+	abstractFunctionArgs.m_baseTypeMultiple = {1, 1, 1};
+	pfacesKernelFunction abstractFunction(KERNEL_MONO_SYNTH_ASTRACT_FUNC_NAME, abstractFunctionArgs);
+
+	// adding the function to the kernel
+	addKernelFunction(abstractFunction);
+	
 	// updating the list of params
-	updateParameters(params, paramvals);
+	auto params_and_vals = getParameterList();
+	updateParameters(params_and_vals.first, params_and_vals.second);
 }
 
 /* Not providing implementation of the virtual method: configureParallelProgram*/
@@ -505,7 +479,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	pfacesParallelAdvisor parallelAdvisor(parallelProgram.getMachine(), parallelProgram.getTargetDevicesIndicies());
 	size_t beVerboseLevel = parallelProgram.m_beVerboseLevel;
 
-	// TODO :: handle bigger flat space = handle the bigger problem op big-job splitting
+	///TODO: handle bigger flat space = handle the bigger problem op big-job splitting
 	if (x_flat_width.getBlkCount() > 1 || u_flat_width.getBlkCount() > 1) {
 		throw std::runtime_error("Flat space size is bigger than what is supported with beta version !");
 	}
@@ -606,7 +580,6 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 
 	// preparing sub-buffer info for the all functions - at arg index 1 ! 
 	// remember arg-0 and arg-2 are not buffered
-	// TODO: generalize the sub-buffring and move it to the core of pFaces
 	if(parallelProgram.countTargetDevices() > 1){
 		perDevAbstractionJob_XUBAG_LOCAL_SubBuffers = getSubBuffers(perDevAbstractionJobs, KERNEL_MONO_SYNTH_ASTRACT_FUNC_IDX, KERNEL_MONO_SYNTH_ASTRACT_FUNCARG_XUBAG_LOCAL, memReport.bufferFinalSize[0], problem_u_width);
 
@@ -624,15 +597,11 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 
 
 	// Setting the job-chunk base
-	// TO DO :: this base will be the base of each chunk after big-job splitting
 	flat_t grid_base_x = 0;
 	flat_t grid_base_u = 0;
 	if (beVerboseLevel >= 2) {
-		std::cout << "Running a 2D job in one chunk with the base: (" 
-			<< grid_base_x << ", " << grid_base_u << ")" << std::endl;
+		std::cout << "Running a 2D job in one chunk with the base: (" << grid_base_x << ", " << grid_base_u << ")" << std::endl;
 	}
-
-
 
 	// First device in the list will be used for memory access
 	const cl::Device&  dataAccessDevice = parallelProgram.getTargetDevices()[0];
@@ -704,8 +673,8 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	instructionList.push_back(instr_BlockingSyncPoint);
 
 
-	/*TODO: Make this as as WriteFromHost Job */
 	/* writing to RO_bag :: the bases */
+	///TODO: Make this as as WriteFromHost Job
 	size_t roBagSize = RO_bag::getSizeBytes({ (double)bigint_size_bytes });
 	std::vector<char> twoBaseArray(roBagSize);
 	RO_bag::fillData(twoBaseArray, grid_base_x, grid_base_u, bigint_size_bytes);
@@ -741,7 +710,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 		postExecuteParams.push_back(casted);
 	}
 
-	registerPostExecuteFunction(saveData, "Saving results", postExecuteParams);
+	registerPostExecuteFunction(pfacesKernel_mono_synth::saveData, "Saving results", postExecuteParams);
 
 }
 

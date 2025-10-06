@@ -1,0 +1,31 @@
+#-----------------------------------------------------------------------
+# File: mono_synth.mem
+# Date: 06.10.2023
+# Author: M. Khaled
+# Description: This file describes the memory buffers needed by the kernel.
+#-----------------------------------------------------------------------
+
+# function 0: abstract
+abstract { 
+
+	# argument 0.0: XU_bag_process
+	XU_bag_process {
+        MemConfig           	= "pfaces_rw_global";
+		isRangeScalable			= "true";
+	}
+
+	# argument 0.1: XU_bag_local
+	XU_bag_local {
+        MemConfig           	= "pfaces_rw_global";
+		isRangeScalable			= "true";
+		isNewOrResident			= "false";
+		residentFuncIdx			= "0";
+		residentFuncArgIdx		= "0";
+		requiresSubBuffering 	= "true";
+	}
+
+	# argument 0.2: RO_bag
+	RO_bag {
+        MemConfig           	= "pfaces_ro_constant";
+	}
+}
