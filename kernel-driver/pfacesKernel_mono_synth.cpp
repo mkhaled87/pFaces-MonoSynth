@@ -12,6 +12,59 @@
 namespace mono_synth {
 
 
+	/*
+	
+	What needs to be done (if complex, start serial then parallelize):
+
+	1- A kernel function to partition the state space U into subsets U_i i \in 1..N
+		=> this can to be done in parallel as the input space might be large, but usually in the dimension of 1-3
+		=> there are many known parallel partitioning algorithms in the literature
+		=> partitioning should be based on the preorder provided for the input space
+		=> input: U (lb, ub, eta) and the preorder relation 
+			=> Q: How the preorder is given in the Matlab code?
+		=> output: list of size |U| with each element being the index of the subset it belongs to (from 1..N)
+		=> this means this parallel algorithm will be parallel on the output (i.e., no of threads will be |U|), and each thread will search for the subset it belongs to.
+
+
+	2- A kernel function for computing the InvariantSet in parallel (Algorithm 1)
+		=> Q: how the invariant set is represented in memory for faster/parallel access(R/W)/processing?
+				=> Let's fix the size of any set Z_out to be |X_safe|
+				=> each element as flag to indicate if the state x \in Z_out belongs to the set or not
+		=> We know Basis \in X_safe (same apply to all Basis sets like B^{us} and B^{pr}) => Could be also represented with a list of size |X_safe| with flags
+		=> LEt's also for now assume that all sets are hyper-rectangles, and based on this, we assume also that the Basis point is just the upper-right corner 
+			of the hyper-rectangle and we later change this if this is wrong
+		=> Line 4. is a set comparison => can be done with global atomic where each thread tries to write to it only if it finds out that its state has no match (=> minimal write, but the atomic memory flag needs to be reset first)
+			=> use also privatization to reduce the number of global atomic writes 
+		=> seems this algorithm could be parallel on Z_ex as it used to get the basis B used in the main for loop
+			=> instead of launching everytime |X_safe| threads, we could launch |Z_ex| threads but two problems here:
+				-> mapping of threads ids to Z_ex will be complex (Z_ex is not contiguous subset of X_safe)
+		=> If we know |U| will be big, we could also launch |X_safe|*|U| threads as we will need to iterate per (x,u) in line 7
+		=> I think it is better to merge lines 5 and 7 into parallel threads over (x,u) and make sure the initializations in lines 6,8 happens before
+		=> line 9 is where the abstraction will be done on the fly and the check of inclusion is easily done in parallel
+		=> Line 12 is simple flag raising in U_int => can be done with privatization
+		=> Line 13 will separate parallelization over U_int (for simplicity over U as U_int is not fixed in size) = > separate sub kernel and split the kernel to pieces?
+		=> Instead of physical swapping in lines 15 and 16, use a dual-buffer approach
+
+	
+	3- A small kernel function to initialize the controller set C(x) (line 1 in Algorithm 2)
+		=> May be a list of size |X_safe| with each element as list of size |U| of flags to indicate the applicability of control action u in state x?
+		=> size could be reduced by using a bit-map for flags in the |U|
+		=> if so, this big memory could be also used in the above algorithms?
+
+	4- A kernel function to extract the controller inputs from the calculated invariant set (line 7+9 in Algorithm 2)
+
+	5- The main logic of the Algorithm 2 "Max Safety Controller" will be done in the main by calling the above functions in order either:
+		- for N times (requires knowing N from step 1 => breaking the parallel execution once), or
+		- with additional small kernel that checks we converged (may be start with global var N and reduce it?) => also breaks the parallel execution every loop, or
+		- some other idea?
+
+
+	*/
+
+
+
+
+
 /* a call-back function to save the controller/abstraction after the kernel finishes */
 size_t pfacesKernel_mono_synth::saveData(const pfaces2DKernel& thisKernel,  const pfacesParallelProgram& thisParallelProgram, std::vector<std::shared_ptr<void>>& postExecuteParamsList) {
 	
@@ -398,10 +451,7 @@ std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_
 }
 
 
-/*********************************************************/
-/** pfacesKernel_mono_synth ******************************/
-/*********************************************************/
-/* the constructor: initiate data and prepare memory maps*/
+/* constructor: initiate data and prepare memory maps*/
 pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKernelLaunchState>& spLaunchState, const std::shared_ptr<pfacesConfigurationReader>& spCfg)
 	: pfaces2DKernel(spLaunchState->getDefaultSourceFilePath(KERNEL_NAME_MONO_SYNTH)),
 	  m_spCfg(std::make_shared<configReader>(spCfg)) {
@@ -458,7 +508,7 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	updateParameters(params_and_vals.first, params_and_vals.second);
 }
 
-/* Not providing implementation of the virtual method: configureParallelProgram*/
+/* providing implementation of the driver of the kernel */
 void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& parallelProgram) {
 
 	// A parallel advisor used for task scheduling
@@ -701,7 +751,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 
 }
 
-/* providing implementation of the virtual method: getTuneProgram*/
+/* not providing implementation of the virtual method: configureTuneParallelProgram*/
 void pfacesKernel_mono_synth::configureTuneParallelProgram(pfacesParallelProgram&, size_t) {
 }
 
