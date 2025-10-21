@@ -703,6 +703,21 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	}
 
 	// TODO: Here, any function called will be able to access the abstraction
+	// 1. Declare a func in the .cpp/.h:
+	//	size_t exHostFunc(void* pPackedKernel, void* pPackedParallelProgram);
+	// 	size_t exHostFunc(void* pPackedKernel, void* pPackedParallelProgram) {
+	//		bla bla;
+	//		cl_int* pBufferCheckResult   = (cl_int*)pParallelProgram->m_dataPool[2].first;
+	//	}
+	
+	//
+	// 2. Define instruction variable in the .h in the class of the kernel:
+	//	  std::shared_ptr<pfacesInstruction> instr_exHostFunc = std::make_shared<pfacesInstruction>();
+
+	// 3. Pushing it to the list of instructions (HERE)
+	// 		instr_exHostFunc->setAsHostFunction(exHostFunc, "exHostFunc");
+	// 		instructionList.push_back(instr_exHostFunc);
+
 
 	// Turn Log off if it was turned on !
 	if (parallelProgram.m_oclDebug) {
@@ -767,5 +782,6 @@ void pfacesKernel_mono_synth::configureTuneParallelProgram(pfacesParallelProgram
 
 
 PFACES_REGISTER_LOADABLE_KERNEL(mono_synth::pfacesKernel_mono_synth)
+
 
 
