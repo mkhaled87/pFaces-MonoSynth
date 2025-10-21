@@ -7,6 +7,9 @@
 
 #include <ctime>
 
+
+
+
 #include "pfacesKernel_mono_synth.h"
 
 namespace mono_synth {
@@ -506,6 +509,9 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	// updating the list of params
 	auto params_and_vals = getParameterList();
 	updateParameters(params_and_vals.first, params_and_vals.second);
+
+
+	
 }
 
 /* providing implementation of the driver of the kernel */
@@ -696,6 +702,8 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 		instructionList.push_back(instr_BlockingSyncPoint);
 	}
 
+	// TODO: Here, any function called will be able to access the abstraction
+
 	// Turn Log off if it was turned on !
 	if (parallelProgram.m_oclDebug) {
 		instructionList.push_back(instr_LogOff);
@@ -759,4 +767,5 @@ void pfacesKernel_mono_synth::configureTuneParallelProgram(pfacesParallelProgram
 
 
 PFACES_REGISTER_LOADABLE_KERNEL(mono_synth::pfacesKernel_mono_synth)
+
 
