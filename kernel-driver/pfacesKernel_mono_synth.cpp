@@ -68,6 +68,96 @@ namespace mono_synth {
 
 
 
+/* Host-side synthesis function: This is where the monotone synthesis algorithm runs */
+size_t pfacesKernel_mono_synth::runMonotoneSynthesis(void* pPackedKernel, void* pPackedParallelProgram) {
+	
+	// Unpacking the pointers
+	const pfacesKernel_mono_synth* pKernel = (const pfacesKernel_mono_synth*)pPackedKernel;
+	const pfacesParallelProgram* pParallelProgram = (const pfacesParallelProgram*)pPackedParallelProgram;
+	
+	// Get verbosity level for logging
+	size_t beVerboseLevel = pParallelProgram->m_beVerboseLevel;
+	
+	// Log start of synthesis
+	if (beVerboseLevel >= 1) {
+		COUT_DATE_AND_TIME("[Monotone Synthesis]")
+		std::cout << "Starting monotone synthesis algorithm..." << std::endl;
+	}
+	
+	// Extract configuration data
+	size_t xWidth = pParallelProgram->m_Universal_globalNDRange[0];
+	size_t uWidth = pParallelProgram->m_Universal_globalNDRange[1];
+	size_t ssDim = pKernel->m_spCfg->getSsDim();
+	size_t isDim = pKernel->m_spCfg->getIsDim();
+	
+	// Access the abstraction data (computed in parallel by the OpenCL kernel)
+	// This is stored in m_dataPool[0] as the XU_bag data
+	char* pAbstractionData = pParallelProgram->m_dataPool[0].first;
+	size_t bagSize = RW_bag::getSizeBytes({(double)ssDim, (double)isDim, (double)pKernel->m_spCfg->getMaxPosts()}, 
+											pKernel->m_kernelScope == KERNEL_SCOPE_GMEM || pKernel->m_kernelScope == KERNEL_SCOPE_CMEM);
+	
+	// ============================================================================
+	// TODO: IMPLEMENT THE MONOTONE SYNTHESIS ALGORITHM HERE
+	// ============================================================================
+	
+	/*
+	 * Overview of what needs to be implemented:
+	 * 
+	 * Algorithm: Maximal Safe Controller Synthesis for Monotone Systems
+	 * 
+	 * Steps (based on comments at lines 18-65):
+	 * 
+	 * 1. Partition input space U into N equivalence classes U_1, ..., U_N
+	 *    based on a preorder relation (e.g., by checking if u' >= u implies f(x,u') >= f(x,u))
+	 * 
+	 * 2. For each partition U_i:
+	 *    - Compute the invariant set Z (states that can remain safe under U_i)
+	 *    - Use fixpoint iteration: Z_new = Z_old ∩ Pre(Z_old, U_i)
+	 *    - Where Pre(Z, U) = {x : Post(x,u) ⊆ Z for some u ∈ U}
+	 * 
+	 * 3. Extract controller: For each state x, controller C(x) is the set of inputs
+	 *    from partition U_i that keep x within the invariant set of U_i
+	 * 
+	 * Current implementation status:
+	 * - Step 0 (Abstraction): DONE - parallel OpenCL kernel computes Post(x,u) for all (x,u)
+	 * - Step 1-3 (Synthesis): TODO - to be implemented here
+	 */
+	
+	// Example: Simple placeholder to show how to access the data
+	if (beVerboseLevel >= 2) {
+		std::cout << "  Problem size: " << xWidth << " states × " << uWidth << " inputs" << std::endl;
+		std::cout << "  Bag size: " << bagSize << " bytes per (x,u) pair" << std::endl;
+		std::cout << "  Total data size: " << (xWidth * uWidth * bagSize) << " bytes" << std::endl;
+		
+		// Example: Access first few data points
+		// Create an instance to access bag data
+		RW_bag bagHelper(ssDim, pKernel->m_spCfg->getMaxPosts());
+		std::cout << "  Sample data from first 3 (x,u) pairs:" << std::endl;
+		size_t maxSample = 3;
+		size_t totalPairs = xWidth * uWidth;
+		if (maxSample > totalPairs) maxSample = totalPairs;
+		for (size_t xu_idx = 0; xu_idx < maxSample; xu_idx++) {
+			char* pBag = pAbstractionData + (xu_idx * bagSize);
+			char flags = bagHelper.getBagElement_FLAGS(pBag);
+			std::cout << "    Pair (" << xu_idx << "): flags = 0x" << std::hex 
+					  << (int)(flags & 0xFF) << std::dec << std::endl;
+		}
+	}
+	
+	// TODO: Add the actual synthesis loop here:
+	// for (size_t i = 0; i < N; i++) {  // N = number of input partitions
+	//   1. Compute invariant set Z for partition U_i
+	//   2. Check convergence
+	//   3. Update controller flags
+	// }
+	
+	if (beVerboseLevel >= 1) {
+		std::cout << "Monotone synthesis complete (placeholder implementation)." << std::endl;
+	}
+	
+	return 0;
+}
+
 /* a call-back function to save the controller/abstraction after the kernel finishes */
 size_t pfacesKernel_mono_synth::saveData(const pfaces2DKernel& thisKernel,  const pfacesParallelProgram& thisParallelProgram, std::vector<std::shared_ptr<void>>& postExecuteParamsList) {
 	
@@ -702,23 +792,6 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 		instructionList.push_back(instr_BlockingSyncPoint);
 	}
 
-	// TODO: Here, any function called will be able to access the abstraction
-	// 1. Declare a func in the .cpp/.h:
-	//	size_t exHostFunc(void* pPackedKernel, void* pPackedParallelProgram);
-	// 	size_t exHostFunc(void* pPackedKernel, void* pPackedParallelProgram) {
-	//		bla bla;
-	//		cl_int* pBufferCheckResult   = (cl_int*)pParallelProgram->m_dataPool[2].first;
-	//	}
-	
-	//
-	// 2. Define instruction variable in the .h in the class of the kernel:
-	//	  std::shared_ptr<pfacesInstruction> instr_exHostFunc = std::make_shared<pfacesInstruction>();
-
-	// 3. Pushing it to the list of instructions (HERE)
-	// 		instr_exHostFunc->setAsHostFunction(exHostFunc, "exHostFunc");
-	// 		instructionList.push_back(instr_exHostFunc);
-
-
 	// Turn Log off if it was turned on !
 	if (parallelProgram.m_oclDebug) {
 		instructionList.push_back(instr_LogOff);
@@ -730,8 +803,28 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 		instructionList.push_back(instr_MsgAbsComplete);
 	}
 
-	// Read results
+	// Read results from device to host memory
 	instructionList.push_back(instr_readAllData);
+	instructionList.push_back(instr_BlockingSyncPoint);
+
+	// ============================================================================
+	// HOST-SIDE SYNTHESIS: After parallel abstraction is complete, run monotone synthesis
+	// ============================================================================
+	// This is where we run the serial synthesis algorithm on the host CPU.
+	// The abstraction data computed by the OpenCL kernel is now available in host memory.
+	//
+	// How it works:
+	// 1. The OpenCL kernel computed Post(x,u) for all (x,u) pairs in parallel
+	// 2. Data was read back from device to host (above)
+	// 3. Now we run the synthesis algorithm serially on the host to:
+	//    - Partition the input space based on monotonicity
+	//    - Compute invariant sets for each partition
+	//    - Extract the maximal safe controller
+	//
+	instr_runSynthesis->setAsHostFunction(runMonotoneSynthesis, "runMonotoneSynthesis");
+	instructionList.push_back(instr_runSynthesis);
+
+	// Add another sync point after synthesis
 	instructionList.push_back(instr_BlockingSyncPoint);
 
 	/* writing to RO_bag :: the bases */

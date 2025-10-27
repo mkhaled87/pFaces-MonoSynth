@@ -243,9 +243,13 @@ private:
   std::shared_ptr<pfacesInstruction> instr_readAllData = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_writeAllData = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_MsgAbsComplete = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_runSynthesis = std::make_shared<pfacesInstruction>();
 
   /* post-execute function and parals */
   std::vector<std::shared_ptr<void>> postExecuteParams;
+
+  /* host-side synthesis function (runs after abstraction) */
+  static size_t runMonotoneSynthesis(void* pPackedKernel, void* pPackedParallelProgram);
 
 public:
   /* constructor */
