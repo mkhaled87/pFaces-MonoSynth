@@ -6,13 +6,526 @@
 */
 
 #include <ctime>
-
-
-
-
+#include <cmath>
+#include <algorithm>
+#include <vector>
+#include <cstring>
+#include <thread>
+#include <mutex>
+#include <atomic>
 #include "pfacesKernel_mono_synth.h"
 
+// Constants from safe_set.cpp
+const double DT_2D = 0.1;
+const double H_MIN_2D = 5.0, H_MAX_2D = 80.0;
+const double V_MIN_2D = 0.0, V_MAX_2D = 20.0;
+const double H_RES_2D = 0.2, V_RES_2D = 0.1;
+const double U_MIN_2D = -3.0, U_MAX_2D = 3.0;
+const double U_RES_2D = 0.1;
+const double DT_3D = 0.4;
+const double H_MIN_3D = 0.0, H_MAX_3D = 80.0;
+const double V_MIN_3D = 0.0, V_MAX_3D = 20.0;
+const double H_RES_3D = 0.8, V_RES_3D = 0.4;
+const double T_RES_3D = 150.0;
+const double T_MAX = 1200.0, T_BRAKE_MIN = -1800.0, T_BRAKE_MAX = -2400.0;
+const double M_MIN = 2000.0, M_MAX = 2500.0;
+const double R_W_MIN = 0.30, R_W_MAX = 0.35;
+const double ALPHA_MIN = 300.0, ALPHA_MAX = 350.0;
+const double BETA_MIN = 0.10, BETA_MAX = 0.25;
+const double GAMMA_MIN = 0.30, GAMMA_MAX = 0.65;
+const int MAX_STATE_DIM = 3;
+const int MAX_INPUT_DIM = 1;
+const int MAX_DISTURBANCE_DIM = 1;
+const int MAX_BASIS_ELEMENTS = 2000;
+const int RK4_STEPS_OPTIMIZED = 200;
+
 namespace mono_synth {
+
+// Safe set computation classes (from safe_set.cpp)
+class MonotoneDynamics {
+private:
+    double dt;
+    bool is_3d;
+public:
+    MonotoneDynamics(int /*state_dim*/, int /*input_dim*/, int /*disturbance_dim*/, double timestep, bool use_3d)
+        : dt(timestep), is_3d(use_3d) {}
+    void nextState(const double* x, const double* u, const double* w, double* x_plus) const {
+        if (is_3d) {
+            solve3DDynamics(x, u, w, x_plus);
+        } else {
+            // 2D dynamics: h(t+dt) = h(t) + v_L*dt - v(t)*dt - 0.5*a*dt^2, v(t+dt) = v(t) + a*dt
+            x_plus[0] = x[0] + w[0]*dt - x[1]*dt - 0.5*u[0]*dt*dt;
+            x_plus[1] = x[1] + u[0]*dt;
+        }
+    }
+private:
+    void solve3DDynamics(const double* x, const double* u, const double* w, double* x_plus) const {
+        // === 1) Choose worst-case parameters for ego vehicle ===
+        double R_w_ego = (u[0] > 0) ? R_W_MIN : R_W_MAX;
+        double M_ego   = ((u[0] / R_w_ego - ALPHA_MIN) > 0) ? M_MIN : M_MAX;
+        double a  = (1.0 / M_ego) * (u[0] / R_w_ego - ALPHA_MIN);
+        double b  = -(1.0 / M_MAX) * BETA_MIN;
+        double c  = -(1.0 / M_MAX) * GAMMA_MIN;
+
+        // === 2) Choose worst-case parameters for lead vehicle ===
+        double R_w_L = (w[0] > 0) ? R_W_MAX : R_W_MIN;
+        double M_L   = ((w[0] / R_w_L - ALPHA_MAX) > 0) ? M_MAX : M_MIN;
+        double a_L = (1.0 / M_L) * (w[0] / R_w_L - ALPHA_MAX);
+        double b_L = -(1.0 / M_MIN) * BETA_MAX;
+        double c_L = -(1.0 / M_MIN) * GAMMA_MAX;
+
+        // === 3) Initial states ===
+        double s  = x[0];   // relative distance
+        double vE = x[1];   // ego velocity
+        double vL = x[2];   // lead velocity
+
+        // === 4) Integrate combined ODE using RK4 ===
+        const int num_steps = RK4_STEPS_OPTIMIZED;  // same as before
+        const double h = dt / num_steps;
+
+        for (int i = 0; i < num_steps; ++i) {
+            double k1_s, k1_vE, k1_vL;
+            double k2_s, k2_vE, k2_vL;
+            double k3_s, k3_vE, k3_vL;
+            double k4_s, k4_vE, k4_vL;
+
+            f_combined(s, vE, vL, a, b, c, a_L, b_L, c_L, k1_s, k1_vE, k1_vL);
+            f_combined(s + 0.5*h*k1_s, vE + 0.5*h*k1_vE, vL + 0.5*h*k1_vL,
+                       a, b, c, a_L, b_L, c_L, k2_s, k2_vE, k2_vL);
+            f_combined(s + 0.5*h*k2_s, vE + 0.5*h*k2_vE, vL + 0.5*h*k2_vL,
+                       a, b, c, a_L, b_L, c_L, k3_s, k3_vE, k3_vL);
+            f_combined(s + h*k3_s, vE + h*k3_vE, vL + h*k3_vL,
+                       a, b, c, a_L, b_L, c_L, k4_s, k4_vE, k4_vL);
+
+            s  += h/6.0 * (k1_s  + 2*k2_s  + 2*k3_s  + k4_s);
+            vE += h/6.0 * (k1_vE + 2*k2_vE + 2*k3_vE + k4_vE);
+            vL += h/6.0 * (k1_vL + 2*k2_vL + 2*k3_vL + k4_vL);
+
+            // Clamp velocities during integration
+            if (vE <= 0.0) vE = 0.0;
+            if (vL >= V_MAX_3D) vL = V_MAX_3D;
+            if (vL <= 0.0) vL = 0.0;
+        }
+
+        // === 5) Clip final results to limits and assign outputs ===
+        x_plus[0] = s;
+        x_plus[1] = std::max(V_MIN_3D, std::min(vE, V_MAX_3D));
+        x_plus[2] = std::max(V_MIN_3D, std::min(vL, V_MAX_3D));
+    }
+
+    void f_combined(double /*s*/, double vE, double vL,
+                    double a, double b, double c,
+                    double aL, double bL, double cL,
+                    double& ds, double& dvE, double& dvL) const {
+        // Relative distance derivative
+        ds  = vL - vE;
+
+        // Ego vehicle acceleration
+        dvE = a + b * vE + c * vE * vE;
+        if (vE <= 0.0 && dvE < 0.0) dvE = 0.0;
+
+        // Lead vehicle acceleration
+        dvL = aL + bL * vL + cL * vL * vL;
+        if (vL >= V_MAX_3D && dvL > 0.0) dvL = 0.0;
+        if (vL <= 0.0 && dvL < 0.0) dvL = 0.0;
+    }
+};
+
+class MonotoneAbstraction {
+private:
+    MonotoneDynamics dyn;
+    
+    // Fixed-size arrays instead of STL containers
+    double x_range_min[MAX_STATE_DIM], x_range_max[MAX_STATE_DIM];
+    double u_range_min[MAX_INPUT_DIM], u_range_max[MAX_INPUT_DIM];
+    double w_range_min[MAX_DISTURBANCE_DIM], w_range_max[MAX_DISTURBANCE_DIM];
+    double x_res[MAX_STATE_DIM], u_res[MAX_INPUT_DIM], w_res[MAX_DISTURBANCE_DIM];
+    int x_numCells[MAX_STATE_DIM], u_numCells[MAX_INPUT_DIM], w_numCells[MAX_DISTURBANCE_DIM];
+    int x_priority[MAX_STATE_DIM], u_priority[MAX_INPUT_DIM], w_priority[MAX_INPUT_DIM];
+    
+    // Safe set basis as flattened 2D array: [basis_index][dimension]
+    int safe_set_basis[MAX_BASIS_ELEMENTS * MAX_STATE_DIM];
+    int safe_set_size;  // Current number of basis elements
+    
+    // Transition cache as flattened arrays
+    int transition_cache_keys[MAX_BASIS_ELEMENTS];
+    int transition_cache_values[MAX_BASIS_ELEMENTS * MAX_STATE_DIM];
+    int transition_cache_size;
+    
+    bool is_3d;
+    mutable std::mutex cache_mutex;
+    
+public:
+    MonotoneAbstraction(const MonotoneDynamics& dynamics, bool use_3d) 
+        : dyn(dynamics), safe_set_size(0), transition_cache_size(0), is_3d(use_3d) {
+        memset(safe_set_basis, 0, sizeof(safe_set_basis));
+        memset(transition_cache_keys, 0, sizeof(transition_cache_keys));
+        memset(transition_cache_values, 0, sizeof(transition_cache_values));
+    }
+    
+    void setupRanges() {
+        if (is_3d) {
+            x_range_min[0] = H_MIN_3D; x_range_max[0] = H_MAX_3D;
+            x_range_min[1] = V_MIN_3D; x_range_max[1] = V_MAX_3D;
+            x_range_min[2] = V_MIN_3D; x_range_max[2] = V_MAX_3D;
+            u_range_min[0] = T_BRAKE_MIN; u_range_max[0] = T_MAX;
+            w_range_min[0] = T_BRAKE_MAX; w_range_max[0] = T_MAX;
+            x_res[0] = H_RES_3D; x_res[1] = V_RES_3D; x_res[2] = V_RES_3D;
+            u_res[0] = T_RES_3D;
+            w_res[0] = T_RES_3D;
+            x_priority[0] = 0; x_priority[1] = 1; x_priority[2] = 0;
+            u_priority[0] = 1;
+            w_priority[0] = 0;
+        } else {
+            x_range_min[0] = H_MIN_2D; x_range_max[0] = H_MAX_2D;
+            x_range_min[1] = V_MIN_2D; x_range_max[1] = V_MAX_2D;
+            u_range_min[0] = U_MIN_2D; u_range_max[0] = U_MAX_2D;
+            w_range_min[0] = V_MIN_2D; w_range_max[0] = V_MAX_2D;
+            x_res[0] = H_RES_2D; x_res[1] = V_RES_2D;
+            u_res[0] = U_RES_2D;
+            w_res[0] = V_RES_2D;
+            x_priority[0] = 0; x_priority[1] = 1;
+            u_priority[0] = 1;
+            w_priority[0] = 0;
+        }
+        
+        int state_dim = is_3d ? 3 : 2;
+        for (int i = 0; i < state_dim; ++i) {
+            x_numCells[i] = std::ceil((x_range_max[i] - x_range_min[i]) / x_res[i]) + 1;
+        }
+        for (int i = 0; i < MAX_INPUT_DIM; ++i) {
+            u_numCells[i] = std::ceil((u_range_max[i] - u_range_min[i]) / u_res[i]) + 1;
+        }
+        for (int i = 0; i < MAX_DISTURBANCE_DIM; ++i) {
+            w_numCells[i] = std::ceil((w_range_max[i] - w_range_min[i]) / w_res[i]) + 1;
+        }
+    }
+    
+    void initializeSafeSet() {
+        safe_set_size = 0;
+        if (is_3d) {
+			 // 3D without precomputation: Initialize with entire state space
+			 safe_set_basis[0] = x_numCells[0];
+			 safe_set_basis[1] = x_numCells[1];
+			 safe_set_basis[2] = x_numCells[2];
+			 safe_set_size = 1;
+			 std::cout << "3D without precomputation completed. Basis size: " << safe_set_size << std::endl;
+        } else {
+            // 2D: Initialize with entire state space
+            int state_dim = 2;
+            for (int i = 0; i < state_dim; ++i) {
+                safe_set_basis[safe_set_size * MAX_STATE_DIM + i] = x_numCells[i];
+            }
+            safe_set_size = 1;
+        }
+    }
+    
+    void getPriorityStateAtIdx(const int* idx, double* val) const {
+        int state_dim = is_3d ? 3 : 2;
+        for (int i = 0; i < state_dim; ++i) {
+            if (x_priority[i] == 1) {
+                val[i] = x_range_min[i] + (idx[i] - 1) * x_res[i];
+            } else {
+                val[i] = x_range_max[i] - (idx[i] - 1) * x_res[i];
+            }
+        }
+    }
+    
+    bool getStateIdx(const double* val, int* idx) const {
+        int state_dim = is_3d ? 3 : 2;
+        const double threshold = 1e-5;
+        
+        for (int i = 0; i < state_dim; ++i) {
+            if (val[i] < x_range_min[i] - threshold || val[i] > x_range_max[i] + threshold) {
+                idx[0] = -1;
+                return false;
+            }
+            
+            if (x_priority[i] == 1) {
+                idx[i] = std::ceil((val[i] - x_range_min[i]) / x_res[i] - threshold) + 1;
+            } else {
+                idx[i] = std::ceil((x_range_max[i] - val[i]) / x_res[i] - threshold) + 1;
+            }
+        }
+        return true;
+    }
+    
+    bool xInSafeSet(const int* x_idx) const {
+        if (x_idx[0] == -1) return false;
+        
+        int state_dim = is_3d ? 3 : 2;
+        for (int i = safe_set_size - 1; i >= 0; --i) {
+            bool dominated = true;
+            for (int j = 0; j < state_dim; ++j) {
+                if (x_idx[j] > safe_set_basis[i * MAX_STATE_DIM + j]) {
+                    dominated = false;
+                    break;
+                }
+            }
+            if (dominated) return true;
+        }
+        return false;
+    }
+    
+    void getTransitionState(const int* x_idx, const int* u_idx, const int* w_idx, int* x_plus_idx) {
+        int flat_idx = flattenIndex(x_idx);
+        
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            for (int i = 0; i < transition_cache_size; ++i) {
+                if (transition_cache_keys[i] == flat_idx) {
+                    int state_dim = is_3d ? 3 : 2;
+                    for (int j = 0; j < state_dim; ++j) {
+                        x_plus_idx[j] = transition_cache_values[i * MAX_STATE_DIM + j];
+                    }
+                    return;
+                }
+            }
+        }
+        
+        int state_dim = is_3d ? 3 : 2;
+        double x_val[MAX_STATE_DIM], u_val[MAX_INPUT_DIM], w_val[MAX_DISTURBANCE_DIM];
+        double x_plus_val[MAX_STATE_DIM];
+        
+        getPriorityStateAtIdx(x_idx, x_val);
+        getPriorityInputAtIdx(u_idx, u_val);
+        getPriorityDisturbanceAtIdx(w_idx, w_val);
+        
+        dyn.nextState(x_val, u_val, w_val, x_plus_val);
+        getStateIdx(x_plus_val, x_plus_idx);
+        
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex);
+            if (transition_cache_size < MAX_BASIS_ELEMENTS) {
+                transition_cache_keys[transition_cache_size] = flat_idx;
+                for (int j = 0; j < state_dim; ++j) {
+                    transition_cache_values[transition_cache_size * MAX_STATE_DIM + j] = x_plus_idx[j];
+                }
+                transition_cache_size++;
+            }
+        }
+    }
+    
+    void removeBasisIdx(const int* basis_idx) {
+        int state_dim = is_3d ? 3 : 2;
+        
+        for (int i = 0; i < safe_set_size; ++i) {
+            bool match = true;
+            for (int j = 0; j < state_dim; ++j) {
+                if (safe_set_basis[i * MAX_STATE_DIM + j] != basis_idx[j]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                if (i < safe_set_size - 1) {
+                    memmove(&safe_set_basis[i * MAX_STATE_DIM], 
+                           &safe_set_basis[(i + 1) * MAX_STATE_DIM],
+                           (safe_set_size - i - 1) * MAX_STATE_DIM * sizeof(int));
+                }
+                safe_set_size--;
+                
+                for (int j = 0; j < state_dim; ++j) {
+                    if (basis_idx[j] == 1) continue;
+                    int candidate[MAX_STATE_DIM];
+                    for (int k = 0; k < state_dim; ++k) {
+                        candidate[k] = basis_idx[k];
+                    }
+                    candidate[j] -= 1;
+                    
+                    if (!xInSafeSet(candidate)) {
+                        addBasisIdx(candidate);
+                    }
+                }
+                break;
+            }
+        }
+    }
+    
+    void addBasisIdx(const int* x_idx) {
+        if (safe_set_size >= MAX_BASIS_ELEMENTS) return;
+        if (xInSafeSet(x_idx)) return;
+        
+        int state_dim = is_3d ? 3 : 2;
+        for (int i = 0; i < state_dim; ++i) {
+            safe_set_basis[safe_set_size * MAX_STATE_DIM + i] = x_idx[i];
+        }
+        safe_set_size++;
+    }
+    
+    void computeSafeSet() {
+        std::cout << "Starting invariant set computation..." << std::endl;
+        
+        int iter = 0;
+        while (true) {
+            int unsafe_basis_indices[MAX_BASIS_ELEMENTS * MAX_STATE_DIM];
+            int unsafe_count = 0;
+            iter++;
+            
+            if (safe_set_size == 0) break;
+            
+            for (int i = 0; i < safe_set_size; ++i) {
+                int x_idx[MAX_STATE_DIM];
+                for (int j = 0; j < (is_3d ? 3 : 2); ++j) {
+                    x_idx[j] = safe_set_basis[i * MAX_STATE_DIM + j];
+                }
+                
+                double x_val[MAX_STATE_DIM];
+                getPriorityStateAtIdx(x_idx, x_val);
+                
+                bool is_unsafe = false;
+                
+                if (is_3d) {
+                    int u_idx[1] = {1};
+                    int w_idx[1] = {w_numCells[0]};
+                    
+                    int x_plus_idx[MAX_STATE_DIM];
+                    getTransitionState(x_idx, u_idx, w_idx, x_plus_idx);
+                    if (!xInSafeSet(x_plus_idx)) {
+                        is_unsafe = true;
+                    }
+                } else {
+                    double velocity = x_val[1];
+                    double u_val = std::max(U_MIN_2D, -10.0 * velocity);
+                    double u_val_vec[1] = {u_val};
+                    int u_idx[1];
+                    getInputIdx(u_val_vec, u_idx);
+                    
+                    double w_val = V_MIN_2D;
+                    double w_val_vec[1] = {w_val};
+                    int w_idx[1];
+                    getDisturbanceIdx(w_val_vec, w_idx);
+                    
+                    int x_plus_idx[MAX_STATE_DIM];
+                    getTransitionState(x_idx, u_idx, w_idx, x_plus_idx);
+                    
+                    if (!xInSafeSet(x_plus_idx)) {
+                        is_unsafe = true;
+                    }
+                }
+                
+                if (is_unsafe) {
+                    for (int j = 0; j < (is_3d ? 3 : 2); ++j) {
+                        unsafe_basis_indices[unsafe_count * MAX_STATE_DIM + j] = x_idx[j];
+                    }
+                    unsafe_count++;
+                }
+            }
+            
+            if (unsafe_count == 0) {
+                std::cout << "Converged! All basis elements are safe." << std::endl;
+                break;
+            } else {
+                for (int i = 0; i < unsafe_count; ++i) {
+                    int basis_idx[MAX_STATE_DIM];
+                    for (int j = 0; j < (is_3d ? 3 : 2); ++j) {
+                        basis_idx[j] = unsafe_basis_indices[i * MAX_STATE_DIM + j];
+                    }
+                    removeBasisIdx(basis_idx);
+                }
+            }
+        }
+        
+        std::cout << "Safe set computation completed in " << iter << " iterations." << std::endl;
+        std::cout << "Final safe set has " << safe_set_size << " basis elements." << std::endl;
+    }
+    
+private:
+    int flattenIndex(const int* idx) const {
+        int result = 0, multiplier = 1;
+        int state_dim = is_3d ? 3 : 2;
+        for (int i = 0; i < state_dim; ++i) {
+            result += (idx[i] - 1) * multiplier;
+            multiplier *= x_numCells[i];
+        }
+        return result;
+    }
+    
+    void getPriorityInputAtIdx(const int* idx, double* val) const {
+        for (int i = 0; i < MAX_INPUT_DIM; ++i) {
+            if (u_priority[i] == 1) {
+                val[i] = u_range_min[i] + (idx[i] - 1) * u_res[i];
+            } else {
+                val[i] = u_range_max[i] - (idx[i] - 1) * u_res[i];
+            }
+        }
+    }
+    
+    void getPriorityDisturbanceAtIdx(const int* idx, double* val) const {
+        for (int i = 0; i < MAX_DISTURBANCE_DIM; ++i) {
+            if (w_priority[i] == 1) {
+                val[i] = w_range_min[i] + (idx[i] - 1) * w_res[i];
+            } else {
+                val[i] = w_range_max[i] - (idx[i] - 1) * w_res[i];
+            }
+        }
+    }
+    
+    bool getInputIdx(const double* val, int* idx) const {
+        const double threshold = 1e-5;
+        
+        for (int i = 0; i < MAX_INPUT_DIM; ++i) {
+            if (val[i] < u_range_min[i] - threshold || val[i] > u_range_max[i] + threshold) {
+                idx[0] = -1;
+                return false;
+            }
+            
+            if (u_priority[i] == 1) {
+                idx[i] = std::ceil((val[i] - u_range_min[i]) / u_res[i] - threshold) + 1;
+            } else {
+                idx[i] = std::ceil((u_range_max[i] - val[i]) / u_res[i] - threshold) + 1;
+            }
+        }
+        return true;
+    }
+    
+    bool getDisturbanceIdx(const double* val, int* idx) const {
+        const double threshold = 1e-5;
+        
+        for (int i = 0; i < MAX_DISTURBANCE_DIM; ++i) {
+            if (val[i] < w_range_min[i] - threshold || val[i] > w_range_max[i] + threshold) {
+                idx[0] = -1;
+                return false;
+            }
+            
+            if (w_priority[i] == 1) {
+                idx[i] = std::ceil((val[i] - w_range_min[i]) / w_res[i] - threshold) + 1;
+            } else {
+                idx[i] = std::ceil((w_range_max[i] - val[i]) / w_res[i] - threshold) + 1;
+            }
+        }
+        return true;
+    }
+};
+
+void runSafeSetComputation(const pfacesKernel_mono_synth* pKernel, size_t beVerboseLevel) {
+    if (beVerboseLevel >= 1) {
+        std::cout << "Running safe_set computation (monotone abstraction)..." << std::endl;
+    }
+    
+    double tau = pKernel->m_spCfg->getSamplingPeriod();
+    size_t ssDim = pKernel->m_spCfg->getSsDim();
+    bool is_3d = (ssDim == 3);
+    
+    // Create dynamics
+    MonotoneDynamics dyn(ssDim, 1, 1, tau, is_3d);
+    
+    // Create abstraction
+    MonotoneAbstraction abstraction(dyn, is_3d);
+    
+    // Setup ranges
+    abstraction.setupRanges();
+    
+    // Initialize safe set
+    abstraction.initializeSafeSet();
+    
+    // Compute safe set
+    abstraction.computeSafeSet();
+    
+    if (beVerboseLevel >= 1) {
+        std::cout << "Safe_set computation complete." << std::endl;
+    }
+}
 
 
 	/*
@@ -96,64 +609,8 @@ size_t pfacesKernel_mono_synth::runMonotoneSynthesis(void* pPackedKernel, void* 
 	size_t bagSize = RW_bag::getSizeBytes({(double)ssDim, (double)isDim, (double)pKernel->m_spCfg->getMaxPosts()}, 
 											pKernel->m_kernelScope == KERNEL_SCOPE_GMEM || pKernel->m_kernelScope == KERNEL_SCOPE_CMEM);
 	
-	// ============================================================================
-	// TODO: IMPLEMENT THE MONOTONE SYNTHESIS ALGORITHM HERE
-	// ============================================================================
-	
-	/*
-	 * Overview of what needs to be implemented:
-	 * 
-	 * Algorithm: Maximal Safe Controller Synthesis for Monotone Systems
-	 * 
-	 * Steps (based on comments at lines 18-65):
-	 * 
-	 * 1. Partition input space U into N equivalence classes U_1, ..., U_N
-	 *    based on a preorder relation (e.g., by checking if u' >= u implies f(x,u') >= f(x,u))
-	 * 
-	 * 2. For each partition U_i:
-	 *    - Compute the invariant set Z (states that can remain safe under U_i)
-	 *    - Use fixpoint iteration: Z_new = Z_old ∩ Pre(Z_old, U_i)
-	 *    - Where Pre(Z, U) = {x : Post(x,u) ⊆ Z for some u ∈ U}
-	 * 
-	 * 3. Extract controller: For each state x, controller C(x) is the set of inputs
-	 *    from partition U_i that keep x within the invariant set of U_i
-	 * 
-	 * Current implementation status:
-	 * - Step 0 (Abstraction): DONE - parallel OpenCL kernel computes Post(x,u) for all (x,u)
-	 * - Step 1-3 (Synthesis): TODO - to be implemented here
-	 */
-	
-	// Example: Simple placeholder to show how to access the data
-	if (beVerboseLevel >= 2) {
-		std::cout << "  Problem size: " << xWidth << " states × " << uWidth << " inputs" << std::endl;
-		std::cout << "  Bag size: " << bagSize << " bytes per (x,u) pair" << std::endl;
-		std::cout << "  Total data size: " << (xWidth * uWidth * bagSize) << " bytes" << std::endl;
-		
-		// Example: Access first few data points
-		// Create an instance to access bag data
-		RW_bag bagHelper(ssDim, pKernel->m_spCfg->getMaxPosts());
-		std::cout << "  Sample data from first 3 (x,u) pairs:" << std::endl;
-		size_t maxSample = 3;
-		size_t totalPairs = xWidth * uWidth;
-		if (maxSample > totalPairs) maxSample = totalPairs;
-		for (size_t xu_idx = 0; xu_idx < maxSample; xu_idx++) {
-			char* pBag = pAbstractionData + (xu_idx * bagSize);
-			char flags = bagHelper.getBagElement_FLAGS(pBag);
-			std::cout << "    Pair (" << xu_idx << "): flags = 0x" << std::hex 
-					  << (int)(flags & 0xFF) << std::dec << std::endl;
-		}
-	}
-	
-	// TODO: Add the actual synthesis loop here:
-	// for (size_t i = 0; i < N; i++) {  // N = number of input partitions
-	//   1. Compute invariant set Z for partition U_i
-	//   2. Check convergence
-	//   3. Update controller flags
-	// }
-	
-	if (beVerboseLevel >= 1) {
-		std::cout << "Monotone synthesis complete (placeholder implementation)." << std::endl;
-	}
+	// Run safe_set computation
+	runSafeSetComputation(pKernel, beVerboseLevel);
 	
 	return 0;
 }
