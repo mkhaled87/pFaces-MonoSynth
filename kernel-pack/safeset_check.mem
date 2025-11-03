@@ -1,0 +1,39 @@
+#-----------------------------------------------------------------------
+# File: safeset_check.mem
+# Date: 03.11.2025
+# Author: AI Assistant
+# Description: Memory buffers for safe set checking kernel (test version)
+#-----------------------------------------------------------------------
+
+# function 1: check_safe_set
+check_safe_set { 
+
+	# argument 1.0: BASIS_bag
+	# Stores current safe_set_basis elements (indices)
+	# Layout: [basis0_dim0, basis0_dim1, ..., basis1_dim0, basis1_dim1, ...]
+	BASIS_bag {
+        MemConfig           	= "pfaces_rw_global";
+		isRangeScalable			= "false";
+	}
+
+	# argument 1.1: UNSAFE_bag
+	# Stores unsafe basis element indices found by each thread
+	# Layout: [unsafe0_dim0, unsafe0_dim1, ..., unsafe1_dim0, ...]
+	UNSAFE_bag {
+        MemConfig           	= "pfaces_rw_global";
+		isRangeScalable			= "false";
+	}
+
+	# argument 1.2: COUNTERS_bag
+	# Stores: [basis_size, unsafe_count]
+	COUNTERS_bag {
+        MemConfig           	= "pfaces_rw_global";
+		isRangeScalable			= "false";
+	}
+
+	# argument 1.3: RO_params
+	# Read-only parameters: state dimensions, grid info, etc.
+	RO_params {
+        MemConfig           	= "pfaces_ro_constant";
+	}
+}

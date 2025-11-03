@@ -430,6 +430,37 @@ public:
         std::cout << "Final safe set has " << safe_set_size << " basis elements." << std::endl;
     }
     
+    // Test function for GPU-based safe set checking
+    void testSafeSetKernel() {
+        std::cout << "\n=== Testing Safe Set Kernel (GPU) ===" << std::endl;
+        
+        int state_dim = is_3d ? 3 : 2;
+        
+        // Create dummy test data
+        const int TEST_BASIS_SIZE = 10;
+        int test_basis[TEST_BASIS_SIZE * 3];  // Max 3 dimensions
+        
+        // Initialize test basis with some dummy indices
+        for (int i = 0; i < TEST_BASIS_SIZE; ++i) {
+            for (int j = 0; j < state_dim; ++j) {
+                test_basis[i * state_dim + j] = i + 1 + j;  // Simple pattern
+            }
+        }
+        
+        std::cout << "Created test BASIS with " << TEST_BASIS_SIZE << " elements" << std::endl;
+        std::cout << "First element: [";
+        for (int j = 0; j < state_dim; ++j) {
+            std::cout << test_basis[j] << (j < state_dim-1 ? ", " : "");
+        }
+        std::cout << "]" << std::endl;
+        
+        // TODO: Allocate GPU memory bags and launch kernel
+        // This will be implemented once kernel registration is complete
+        
+        std::cout << "Test kernel infrastructure ready" << std::endl;
+        std::cout << "=== Test Complete ===" << std::endl;
+    }
+    
 private:
     int flattenIndex(const int* idx) const {
         int result = 0, multiplier = 1;
@@ -518,6 +549,9 @@ void runSafeSetComputation(const pfacesKernel_mono_synth* pKernel, size_t beVerb
     
     // Initialize safe set
     abstraction.initializeSafeSet();
+    
+    // TEST: Call GPU kernel test before main computation
+    abstraction.testSafeSetKernel();
     
     // Compute safe set
     abstraction.computeSafeSet();
@@ -1052,6 +1086,32 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 
 	// adding the function to the kernel
 	addKernelFunction(abstractFunction);
+	
+	// Loading the memory fingerprint of the check_safe_set function
+	auto safesetCheckFunctionArgs = pfacesKernelFunctionArguments::loadFromFile(
+		spLaunchState->getKernelPackPath() + "safeset_check.mem",	/* memory config file */
+		KERNEL_SAFESET_CHECK_FUNC_NAME,  							/* name of the function */
+		{ "BASIS_bag", "UNSAFE_bag", "COUNTERS_bag", "RO_params" },	/* list of arg names */
+		false														/* do not save memory render files */
+	);
+	// Set sizes for safe set check bags
+	// BASIS_bag: max 2000 elements * 3 dims * sizeof(int)
+	// UNSAFE_bag: max 2000 elements * 3 dims * sizeof(int)  
+	// COUNTERS_bag: 2 integers (basis_size, unsafe_count)
+	// RO_params: struct with state_dim and max_basis_size
+	const size_t MAX_BASIS_ELEMENTS = 2000;
+	const size_t MAX_STATE_DIM = 3;
+	safesetCheckFunctionArgs.m_baseTypeSize = {
+		MAX_BASIS_ELEMENTS * MAX_STATE_DIM * sizeof(int),	// BASIS_bag
+		MAX_BASIS_ELEMENTS * MAX_STATE_DIM * sizeof(int),	// UNSAFE_bag
+		2 * sizeof(int),									// COUNTERS_bag
+		2 * sizeof(int)										// RO_params (state_dim, max_basis_size)
+	};
+	safesetCheckFunctionArgs.m_baseTypeMultiple = {1, 1, 1, 1};
+	pfacesKernelFunction safesetCheckFunction(KERNEL_SAFESET_CHECK_FUNC_NAME, safesetCheckFunctionArgs);
+	
+	// adding the safe set check function to the kernel
+	addKernelFunction(safesetCheckFunction);
 	
 	// updating the list of params
 	auto params_and_vals = getParameterList();

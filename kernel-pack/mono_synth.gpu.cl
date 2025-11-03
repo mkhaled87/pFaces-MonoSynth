@@ -16,3 +16,6 @@
 
 // pFaces-Including a KERNEL-Function: ABSTRACT	--- parallel algorrithm in (X,U)
 @pfaces-include:"mono_synth_abstract.cl"
+
+// pFaces-Including a KERNEL-Function: CHECK_SAFE_SET	--- parallel safe set checking
+@pfaces-include:"mono_synth_safeset_check.cl"
