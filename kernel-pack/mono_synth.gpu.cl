@@ -11,8 +11,5 @@
 *  The kernel manger will replace parameters enclosed by "@@" before compiling !
 */
 
-// pfaces-Including a parameters and some funcs for the mono_synth
-@pfaces-include:"mono_synth_utils.cl"
-
-// pFaces-Including a KERNEL-Function: ABSTRACT	--- parallel algorrithm in (X,U)
-@pfaces-include:"mono_synth_abstract.cl"
+// pFaces-Including a KERNEL-Function: precompute_transitions	--- parallel algorithm in (X)
+@pfaces-include:"precompute_transitions.cl"

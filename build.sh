@@ -9,7 +9,7 @@
 BUILD_TYPE=Release
 
 # Clean build ?
-CLEAN_BUILD=true
+CLEAN_BUILD=false
 
 # remove old build binaries
 if [ $CLEAN_BUILD = true ]
