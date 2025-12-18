@@ -34,6 +34,7 @@ private:
   const char* param_ss_ub = "@@SS_UB@@";
   const char* param_tau = "@@SAMPLING_PERIOD@@";
   const char* param_extra_include = "@@EXTRA_INCLUDE@@";
+  const char*  cache_file = "transition_cache.bin";
 
 
   /* the jobs referenced in the parallel program and the tune program*/
@@ -46,6 +47,8 @@ private:
   std::shared_ptr<pfacesInstruction> instr_BlockingSyncPoint = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_readNextStateTable = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_writeNextStateTable = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_hostFuncSaveTransitions = std::make_shared<pfacesInstruction>();
+  
 
   size_t x_flat_width;
 
@@ -63,7 +66,7 @@ public:
   void configureTuneParallelProgram(pfacesParallelProgram& tuneParallelProgram, size_t targetFunctionIdx);
 
   /* a post-back function to save the controller/abstraction after the kernel finishes */
-  static size_t saveData(const pfaces2DKernel& thisKernel,  const pfacesParallelProgram& thisParallelProgram, std::vector<std::shared_ptr<void>>& postExecuteParamsList);
+  static size_t saveTransitionTable(void* pPackedKernel, void* pPackedParallelProgram);
 
   /* providing implementation of the virtual method: getParameterList*/
   std::pair<std::vector<std::string>, std::vector<std::string>> getParameterList();

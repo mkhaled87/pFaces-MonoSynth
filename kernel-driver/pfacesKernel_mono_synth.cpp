@@ -7,23 +7,26 @@
 
 #include <ctime>
 
-
-
-
 #include "pfacesKernel_mono_synth.h"
 
 namespace mono_synth {
 
 
 /* a call-back function to save the controller/abstraction after the kernel finishes */
-size_t pfacesKernel_mono_synth::saveData(const pfaces2DKernel& thisKernel,  const pfacesParallelProgram& thisParallelProgram, std::vector<std::shared_ptr<void>>& postExecuteParamsList) {
+size_t pfacesKernel_mono_synth::saveTransitionTable(void* pPackedKernel, void* pPackedParallelProgram) {
 	
 	// retrieving the required values
-	char* pDataTransitionTable = thisParallelProgram.m_dataPool[0].first;
+	const static pfacesParallelProgram*  pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
+	const char* pDataTransitionTable = pParallelProgram->m_dataPool[0].first;
+	auto transition_table_size = pParallelProgram->m_dataPool[0].second;
 
-	// collecting X and U width per dimension
-	// std::vector<symbolic_t> X_widthPerDimension;
-	// pfacesFlatSpace::getFlatWidthFromConcreteSpace(ssDim, ssEta, ssLb, ssUb, ssErr, X_widthPerDimension);
+	// save to file
+	const char* file_path = ((pfacesKernel_mono_synth*)(pPackedKernel))->cache_file;
+	std::cout << "Saving transitions to file: " << file_path << std::endl;
+	std::ofstream cache_out(file_path, std::ios::binary);
+	if (cache_out.good()) {
+		cache_out.write(pDataTransitionTable, transition_table_size);
+	}	
 
 	return 0;
 }
@@ -185,8 +188,16 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	// Read the transition table
 	instructionList.push_back(instr_readNextStateTable);
 
+	// Sync to make sure data is read
+	instructionList.push_back(instr_BlockingSyncPoint);
+
+	// Call host function to save transitions
+	instr_hostFuncSaveTransitions->setAsHostFunction(pfacesKernel_mono_synth::saveTransitionTable, "saveTransitionTable");
+	instructionList.push_back(instr_hostFuncSaveTransitions);
+
 	// Last instruction
 	instructionList.push_back(instr_BlockingSyncPoint);
+	
 
 	// setting the execute ranges
 	parallelProgram.m_Universal_globalNDRange = ndRangeRunPrecomputeTrans;
@@ -199,7 +210,6 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 
 	///TODO: Move this as host function when you add the other kernel function
 	std::vector<std::shared_ptr<void>> postExecuteParams;
-	registerPostExecuteFunction(pfacesKernel_mono_synth::saveData, "Saving results", postExecuteParams);
 }
 
 /* not providing implementation of the virtual method: configureTuneParallelProgram*/

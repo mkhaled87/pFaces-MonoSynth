@@ -9,6 +9,8 @@ if("$ENV{PFACES_SDK_ROOT}" STREQUAL "")
 else()
   include($ENV{PFACES_SDK_ROOT}/pfaces_kernel.cmake)
 endif()
+set(CMAKE_CXX_STANDARD 14)
+
 
 # Kernel driver name and its sources
 set(PFACES_KERNEL mono_synth)
