@@ -44,10 +44,10 @@
 /**
  * ODE right-hand side: computes derivatives for position and velocity
  */
-void f(double vel, double a, double b, double c, bool is_lead, double* dpos, double* dvel) {
-    double dvdt = a + b * vel + c * vel * vel;
-    if (vel <= 0.0 && dvdt < 0.0) dvdt = 0.0;
-    if (is_lead && vel >= V_MAX_3D && dvdt > 0.0) dvdt = 0.0;
+void f(float vel, float a, float b, float c, bool is_lead, float* dpos, float* dvel) {
+    float dvdt = a + b * vel + c * vel * vel;
+    if (vel <= 0.0f && dvdt < 0.0f) dvdt = 0.0f;
+    if (is_lead && vel >= V_MAX_3D && dvdt > 0.0f) dvdt = 0.0f;
     *dpos = vel;
     *dvel = dvdt;
 }
@@ -55,14 +55,14 @@ void f(double vel, double a, double b, double c, bool is_lead, double* dpos, dou
 /**
  * RK4 ODE solver for vehicle dynamics
  */
-void solveODE(double v0, double a, double b, double c, bool is_lead, double dt, 
-              double* pos, double* vel) {
-    const double step_size = dt / NUM_STEPS;
-    *pos = 0.0;
+void solveODE(float v0, float a, float b, float c, bool is_lead, float dt, 
+              float* pos, float* vel) {
+    const float step_size = dt / NUM_STEPS;
+    *pos = 0.0f;
     *vel = v0;
     
     for (int i = 0; i < NUM_STEPS; ++i) {
-        double k1_pos, k1_vel, k2_pos, k2_vel, k3_pos, k3_vel, k4_pos, k4_vel;
+        float k1_pos, k1_vel, k2_pos, k2_vel, k3_pos, k3_vel, k4_pos, k4_vel;
         
         f(*vel, a, b, c, is_lead, &k1_pos, &k1_vel);
         f(*vel + step_size/2 * k1_vel, a, b, c, is_lead, &k2_pos, &k2_vel);
@@ -79,33 +79,33 @@ void solveODE(double v0, double a, double b, double c, bool is_lead, double dt,
 /**
  * Solve 3D vehicle dynamics with worst-case parameters
  */
-void solve3DDynamicsWorstCase(double* x, double dt, double* x_plus) {
+void solve3DDynamicsWorstCase(float* x, float dt, float* x_plus) {
 
-    double u_worst = T_BRAKE_MIN;
-    double w_worst = T_BRAKE_MAX;
+    float u_worst = T_BRAKE_MIN;
+    float w_worst = T_BRAKE_MAX;
 
     // Choose worst-case parameters for ego vehicle (braking)
-    double R_w_ego = (u_worst > 0) ? R_W_MIN : R_W_MAX;
-    double M_ego = ((u_worst / R_w_ego - ALPHA_MIN) > 0) ? M_MIN : M_MAX;
-    double a = (1.0 / M_ego) * (u_worst / R_w_ego - ALPHA_MIN);
-    double b = -(1.0 / M_MAX) * BETA_MIN;
-    double c = -(1.0 / M_MAX) * GAMMA_MIN;
+    float R_w_ego = (u_worst > 0) ? R_W_MIN : R_W_MAX;
+    float M_ego = ((u_worst / R_w_ego - ALPHA_MIN) > 0) ? M_MIN : M_MAX;
+    float a = (1.0f / M_ego) * (u_worst / R_w_ego - ALPHA_MIN);
+    float b = -(1.0f / M_MAX) * BETA_MIN;
+    float c = -(1.0f / M_MAX) * GAMMA_MIN;
     
     // Choose worst-case parameters for lead vehicle
-    double R_w_L = (w_worst > 0) ? R_W_MAX : R_W_MIN;
-    double M_L = ((w_worst / R_w_L - ALPHA_MAX) > 0) ? M_MAX : M_MIN;
-    double a_L = (1.0 / M_L) * (w_worst / R_w_L - ALPHA_MAX);
-    double b_L = -(1.0 / M_MIN) * BETA_MAX;
-    double c_L = -(1.0 / M_MIN) * GAMMA_MAX;
+    float R_w_L = (w_worst > 0) ? R_W_MAX : R_W_MIN;
+    float M_L = ((w_worst / R_w_L - ALPHA_MAX) > 0) ? M_MAX : M_MIN;
+    float a_L = (1.0f / M_L) * (w_worst / R_w_L - ALPHA_MAX);
+    float b_L = -(1.0f / M_MIN) * BETA_MAX;
+    float c_L = -(1.0f / M_MIN) * GAMMA_MAX;
     
     // Solve vehicle dynamics using RK4
-    double pos_plus, vel_plus, posL_plus, velL_plus;
+    float pos_plus, vel_plus, posL_plus, velL_plus;
     solveODE(x[1], a, b, c, false, dt, &pos_plus, &vel_plus);
     solveODE(x[2], a_L, b_L, c_L, true, dt, &posL_plus, &velL_plus);
     
     x_plus[0] = x[0] + posL_plus - pos_plus;
-    x_plus[1] = fmax((double)V_MIN_3D, fmin((double)vel_plus, (double)V_MAX_3D));
-    x_plus[2] = fmax((double)V_MIN_3D, fmin((double)velL_plus, (double)V_MAX_3D));
+    x_plus[1] = fmax((float)V_MIN_3D, fmin((float)vel_plus, (float)V_MAX_3D));
+    x_plus[2] = fmax((float)V_MIN_3D, fmin((float)velL_plus, (float)V_MAX_3D));
 }
 
 
@@ -130,11 +130,11 @@ void unflattenIndex(int flat_idx, int state_dim, const unsigned int* x_numCells,
  * Convert indices to physical state values using priority directions
  */
 void getPriorityStateAtIdx(int* idx, int state_dim,
-                           const double* x_range_min,
-                           const double* x_range_max,
-                           const double* x_res,
+                           const float* x_range_min,
+                           const float* x_range_max,
+                           const float* x_res,
                            const int* x_priority,
-                           double* val) {
+                           float* val) {
 
     for (int i = 0; i < state_dim; ++i) {
         if (x_priority[i] == 1) {
@@ -149,16 +149,16 @@ void getPriorityStateAtIdx(int* idx, int state_dim,
 /**
  * Convert physical state values to indices
  */
-void getStateIdx(double* val, int state_dim,
-                 const double* x_range_min,
-                 const double* x_range_max,
-                 const double* x_res,
+void getStateIdx(float* val, int state_dim,
+                 const float* x_range_min,
+                 const float* x_range_max,
+                 const float* x_res,
                  const int* x_priority,
                  const unsigned int* x_numCells,
                  unsigned int* idx) {
 
     for (int i = 0; i < state_dim; ++i) {
-        double val_clamped = fmax((double)x_range_min[i], fmin((double)val[i], (double)x_range_max[i]));
+        float val_clamped = fmax((float)x_range_min[i], fmin((float)val[i], (float)x_range_max[i]));
         
         if (x_priority[i] == 1) {
             idx[i] = (int)floor((val_clamped - x_range_min[i]) / x_res[i]) + 1;
@@ -181,9 +181,9 @@ __kernel void precompute_transitions(
 ) {
     int flat_idx = get_global_id(0);
 
-    const double x_range_min[SS_DIM] = SS_MIN;
-    const double x_range_max[SS_DIM] = SS_MAX;
-    const double x_res[SS_DIM] = SS_RES;
+    const float x_range_min[SS_DIM] = SS_MIN;
+    const float x_range_max[SS_DIM] = SS_MAX;
+    const float x_res[SS_DIM] = SS_RES;
     const int x_priority[SS_DIM] = SS_PRIORITY;    
     
     unsigned int x_numCells[SS_DIM];
@@ -196,11 +196,11 @@ __kernel void precompute_transitions(
     unflattenIndex(flat_idx, SS_DIM, x_numCells, x_idx);
     
     // Convert indices to physical state values
-    double x_val[SS_DIM];
+    float x_val[SS_DIM];
     getPriorityStateAtIdx(x_idx, SS_DIM, x_range_min, x_range_max, x_res, x_priority, x_val);
     
     // Compute worst-case next state
-    double x_plus_val[SS_DIM];
+    float x_plus_val[SS_DIM];
 
     // 3D worst-case: minimum input, maximum disturbance
     solve3DDynamicsWorstCase(x_val, SAMPLING_TIME, x_plus_val);
