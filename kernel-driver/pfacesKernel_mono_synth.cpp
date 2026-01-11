@@ -20,13 +20,19 @@ size_t pfacesKernel_mono_synth::saveTransitionTable(void* pPackedKernel, void* p
 	const char* pDataTransitionTable = pParallelProgram->m_dataPool[0].first;
 	auto transition_table_size = pParallelProgram->m_dataPool[0].second;
 
+	// Get kernel instance to access dimensions
+	pfacesKernel_mono_synth* kernel = (pfacesKernel_mono_synth*)(pPackedKernel);
+
 	// save to file
-	const char* file_path = ((pfacesKernel_mono_synth*)(pPackedKernel))->cache_file;
+	const char* file_path = kernel->cache_file;
 	std::cout << "Saving transitions to file: " << file_path << std::endl;
 	std::ofstream cache_out(file_path, std::ios::binary);
 	if (cache_out.good()) {
 		cache_out.write(pDataTransitionTable, transition_table_size);
-	}	
+		std::cout << "Successfully saved " << transition_table_size << " bytes to " << file_path << std::endl;
+	} else {
+		std::cerr << "ERROR: Failed to open file for writing: " << file_path << std::endl;
+	}
 
 	return 0;
 }
@@ -92,7 +98,7 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 		false																		/* do not save memory render files */
 	);
 	precomputeTransitionsFunctionArgs.m_baseTypeSize = {sizeof(cl_uint)};
-	precomputeTransitionsFunctionArgs.m_baseTypeMultiple = {x_flat_width};
+	precomputeTransitionsFunctionArgs.m_baseTypeMultiple = {x_flat_width * ssDim};
 	pfacesKernelFunction precomputeTransitionsFunction(KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME, precomputeTransitionsFunctionArgs);
 
 	// adding the function to the kernel
