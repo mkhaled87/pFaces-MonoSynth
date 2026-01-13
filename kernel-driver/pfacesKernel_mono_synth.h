@@ -1,9 +1,9 @@
 /*
- * pfacesKernel_mono_synth.h
- *
- *  created on: 01.10.2025
- *      author: M. Khaled
- */
+* pfacesKernel_mono_synth.h
+*
+*  created on: 01.10.2025
+*      author: M. Khaled
+*/
 
 #pragma once
 
@@ -48,6 +48,7 @@ private:
   std::shared_ptr<pfacesInstruction> instr_readNextStateTable = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_writeNextStateTable = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_hostFuncSaveTransitions = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_hostFuncLoadNextStateTable = std::make_shared<pfacesInstruction>();
   
 
   size_t x_flat_width;
@@ -65,8 +66,9 @@ public:
   /* pFaces program tuning configuration */
   void configureTuneParallelProgram(pfacesParallelProgram& tuneParallelProgram, size_t targetFunctionIdx);
 
-  /* a post-back function to save the controller/abstraction after the kernel finishes */
+  /* a post-back function to save/load the controller/abstraction after the kernel finishes */
   static size_t saveTransitionTable(void* pPackedKernel, void* pPackedParallelProgram);
+  static size_t loadTransitionTable(void* pPackedKernel, void* pPackedParallelProgram);
 
   /* providing implementation of the virtual method: getParameterList*/
   std::pair<std::vector<std::string>, std::vector<std::string>> getParameterList();

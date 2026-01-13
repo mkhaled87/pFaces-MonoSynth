@@ -8,7 +8,7 @@
 #include <ctime>
 
 #include "pfacesKernel_mono_synth.h"
-
+#include <filesystem>
 namespace mono_synth {
 
 
@@ -18,22 +18,58 @@ size_t pfacesKernel_mono_synth::saveTransitionTable(void* pPackedKernel, void* p
 	// retrieving the required values
 	const static pfacesParallelProgram*  pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
 	const char* pDataTransitionTable = pParallelProgram->m_dataPool[0].first;
-	auto transition_table_size = pParallelProgram->m_dataPool[0].second;
-
-	// Get kernel instance to access dimensions
-	pfacesKernel_mono_synth* kernel = (pfacesKernel_mono_synth*)(pPackedKernel);
+	int ss_dim = ((pfacesKernel_mono_synth*)(pPackedKernel))->m_spCfg->getSsDim();
+	// int number_of_states = number_of_elements/ss_dim;
+	int number_of_states = ((pfacesKernel_mono_synth*)(pPackedKernel))->x_flat_width;
+	int number_of_elements = number_of_states*ss_dim;
 
 	// save to file
-	const char* file_path = kernel->cache_file;
+	const char* file_path = ((pfacesKernel_mono_synth*)(pPackedKernel))->cache_file;
 	std::cout << "Saving transitions to file: " << file_path << std::endl;
 	std::ofstream cache_out(file_path, std::ios::binary);
 	if (cache_out.good()) {
-		cache_out.write(pDataTransitionTable, transition_table_size);
-		std::cout << "Successfully saved " << transition_table_size << " bytes to " << file_path << std::endl;
-	} else {
-		std::cerr << "ERROR: Failed to open file for writing: " << file_path << std::endl;
-	}
+		cache_out.write(reinterpret_cast<const char*>(&number_of_states), sizeof(decltype(number_of_states)));
+		cache_out.write(pDataTransitionTable, number_of_elements*sizeof(cl_int));
+	}	
 
+	return 0;
+}
+
+
+/* a call-back function to save the controller/abstraction after the kernel finishes */
+size_t pfacesKernel_mono_synth::loadTransitionTable(void* pPackedKernel, void* pPackedParallelProgram) {
+	
+	// retrieving the required values
+	const static pfacesParallelProgram*  pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
+	char* pDataTransitionTable = pParallelProgram->m_dataPool[0].first;
+	// auto transition_table_size = pParallelProgram->m_dataPool[0].second;
+
+	// save to file
+	const char* file_path = ((pfacesKernel_mono_synth*)(pPackedKernel))->cache_file;
+	// int number_of_elements = transition_table_size/sizeof(cl_int);
+	int ss_dim = ((pfacesKernel_mono_synth*)(pPackedKernel))->m_spCfg->getSsDim();
+	// int number_of_states = number_of_elements/ss_dim;
+	int number_of_states = ((pfacesKernel_mono_synth*)(pPackedKernel))->x_flat_width;
+	int number_of_elements = number_of_states*ss_dim;
+
+	// load
+	std::ifstream cache_in(file_path, std::ios::binary);
+        
+	if (cache_in.good()) {
+		std::cout << "Loading transitions from file: " << file_path << std::endl;
+		int cached_total_states;
+		cache_in.read(reinterpret_cast<char*>(&cached_total_states), sizeof(int));
+		
+		if (cached_total_states == number_of_states) {
+			cache_in.read(reinterpret_cast<char*>(pDataTransitionTable), 
+							sizeof(cl_int) * number_of_elements);
+			cache_in.close();
+		}
+		else {
+			std::cerr << "Cached transitions do not match the current problem size. Recomputing transitions." << std::endl;
+		}
+		cache_in.close();
+	}
 	return 0;
 }
 
@@ -178,28 +214,41 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	if (parallelProgram.countTargetDevices() > 1) {
 		instructionList.push_back(instr_BlockingSyncPoint);
 	}
+	// Check if the transition table is already loaded
+	if(std::ifstream(cache_file).good()) {
+		// Read the transition table
+		instructionList.push_back(instr_readNextStateTable);
 
-	// The first task: PrecomputeTransitions
-	for (size_t i = 0; i < job_execPrecomputeTransition.size(); i++) {
-		std::shared_ptr<pfacesInstruction> tmpExecuteInstr = std::make_shared<pfacesInstruction>();
-		tmpExecuteInstr->setAsDeviceExecute(job_execPrecomputeTransition[i]);
-		instructionList.push_back(tmpExecuteInstr);
-	}
-
-	// A Barrier to force all devices to finish.
-	if (parallelProgram.countTargetDevices() > 1) {
+		// Sync to make sure data is read
 		instructionList.push_back(instr_BlockingSyncPoint);
+
+		// Load the transition table
+		instr_hostFuncLoadNextStateTable->setAsHostFunction(pfacesKernel_mono_synth::loadTransitionTable, "loadTransitionTable");
+		instructionList.push_back(instr_hostFuncLoadNextStateTable);
+	} else {
+
+		// The first task: PrecomputeTransitions
+		for (size_t i = 0; i < job_execPrecomputeTransition.size(); i++) {
+			std::shared_ptr<pfacesInstruction> tmpExecuteInstr = std::make_shared<pfacesInstruction>();
+			tmpExecuteInstr->setAsDeviceExecute(job_execPrecomputeTransition[i]);
+			instructionList.push_back(tmpExecuteInstr);
+		}
+
+		// A Barrier to force all devices to finish.
+		if (parallelProgram.countTargetDevices() > 1) {
+			instructionList.push_back(instr_BlockingSyncPoint);
+		}
+
+		// Read the transition table
+		instructionList.push_back(instr_readNextStateTable);
+
+		// Sync to make sure data is read
+		instructionList.push_back(instr_BlockingSyncPoint);
+
+		// Call host function to save transitions
+		instr_hostFuncSaveTransitions->setAsHostFunction(pfacesKernel_mono_synth::saveTransitionTable, "saveTransitionTable");
+		instructionList.push_back(instr_hostFuncSaveTransitions);
 	}
-
-	// Read the transition table
-	instructionList.push_back(instr_readNextStateTable);
-
-	// Sync to make sure data is read
-	instructionList.push_back(instr_BlockingSyncPoint);
-
-	// Call host function to save transitions
-	instr_hostFuncSaveTransitions->setAsHostFunction(pfacesKernel_mono_synth::saveTransitionTable, "saveTransitionTable");
-	instructionList.push_back(instr_hostFuncSaveTransitions);
 
 	// Last instruction
 	instructionList.push_back(instr_BlockingSyncPoint);
