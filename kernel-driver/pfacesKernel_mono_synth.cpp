@@ -5,6 +5,9 @@
 *      author: M. Khaled
 */
 
+#include <iostream>
+#include <fstream>
+#include <sstream>
 #include <ctime>
 
 #include "pfacesKernel_mono_synth.h"
@@ -133,7 +136,7 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 		{KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_NEXT_STATE_TABLE_NAME},	/* list of the names of its args */
 		false																		/* do not save memory render files */
 	);
-	precomputeTransitionsFunctionArgs.m_baseTypeSize = {sizeof(cl_uint)};
+	precomputeTransitionsFunctionArgs.m_baseTypeSize = {sizeof(cl_int)};
 	precomputeTransitionsFunctionArgs.m_baseTypeMultiple = {x_flat_width * ssDim};
 	pfacesKernelFunction precomputeTransitionsFunction(KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME, precomputeTransitionsFunctionArgs);
 
@@ -214,38 +217,62 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	if (parallelProgram.countTargetDevices() > 1) {
 		instructionList.push_back(instr_BlockingSyncPoint);
 	}
-	// Check if the transition table is already loaded
-	if(std::ifstream(cache_file).good()) {
-		// Read the transition table
-		instructionList.push_back(instr_readNextStateTable);
+	// 1. Determine if we have a VALID cache
+	bool useCache = false;
+	std::ifstream cache_check(cache_file, std::ios::binary);
+	if (cache_check.good()) {
+		int cached_total_states;
+		cache_check.read(reinterpret_cast<char*>(&cached_total_states), sizeof(int));
+		if (cached_total_states == (int)x_flat_width) {
+			useCache = true;
+		}
+	}
+	cache_check.close();
 
-		// Sync to make sure data is read
-		instructionList.push_back(instr_BlockingSyncPoint);
+	if (useCache) {
+		// PATH A: LOAD FROM CACHE
+		if (beVerboseLevel >= 2) {
+			std::cout << "Loading transitions from valid cache: " << cache_file << std::endl;
+		}
 
-		// Load the transition table
+		// 1. Host function to read file -> Host Data Pool
 		instr_hostFuncLoadNextStateTable->setAsHostFunction(pfacesKernel_mono_synth::loadTransitionTable, "loadTransitionTable");
 		instructionList.push_back(instr_hostFuncLoadNextStateTable);
-	} else {
+		
+		// 2. Sync to ensure file is read before writing to device
+		instructionList.push_back(instr_BlockingSyncPoint);
 
-		// The first task: PrecomputeTransitions
+		// 3. Write Host Data Pool -> Device Buffer
+		instructionList.push_back(instr_writeNextStateTable);
+	} else {
+		// PATH B: COMPUTE FROM KERNEL
+		if (beVerboseLevel >= 2) {
+			if (std::ifstream(cache_file).good()) {
+				std::cout << "Cache exists but is invalid for current configuration. Recomputing..." << std::endl;
+			} else {
+				std::cout << "No cache found. Computing transitions..." << std::endl;
+			}
+		}
+
+		// 1. The first task: PrecomputeTransitions
 		for (size_t i = 0; i < job_execPrecomputeTransition.size(); i++) {
 			std::shared_ptr<pfacesInstruction> tmpExecuteInstr = std::make_shared<pfacesInstruction>();
 			tmpExecuteInstr->setAsDeviceExecute(job_execPrecomputeTransition[i]);
 			instructionList.push_back(tmpExecuteInstr);
 		}
 
-		// A Barrier to force all devices to finish.
+		// 2. A Barrier to force all devices to finish computation.
 		if (parallelProgram.countTargetDevices() > 1) {
 			instructionList.push_back(instr_BlockingSyncPoint);
 		}
 
-		// Read the transition table
+		// 3. Read Device Buffer -> Host Data Pool
 		instructionList.push_back(instr_readNextStateTable);
 
-		// Sync to make sure data is read
+		// 4. Sync to make sure data is read back to host
 		instructionList.push_back(instr_BlockingSyncPoint);
 
-		// Call host function to save transitions
+		// 5. Call host function to save transitions Host Data Pool -> File
 		instr_hostFuncSaveTransitions->setAsHostFunction(pfacesKernel_mono_synth::saveTransitionTable, "saveTransitionTable");
 		instructionList.push_back(instr_hostFuncSaveTransitions);
 	}

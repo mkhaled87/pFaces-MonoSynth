@@ -5,37 +5,39 @@
 
 // Vehicle dynamics parameters (3D)
 ///TODO: put these in the config files
-#define T_MAX 1200.0f
-#define T_BRAKE_MIN -1800.0f
-#define T_BRAKE_MAX -2400.0f
-#define M_MIN 2000.0f
-#define M_MAX 2500.0f
-#define R_W_MIN 0.30f
-#define R_W_MAX 0.35f
-#define ALPHA_MIN 300.0f
-#define ALPHA_MAX 350.0f
-#define BETA_MIN 0.10f
-#define BETA_MAX 0.25f
-#define GAMMA_MIN 0.30f
-#define GAMMA_MAX 0.65f
-#define V_MIN_3D 0.0f
-#define V_MAX_3D 20.0f
-
-// State space parameters - injected from config via pFaces parameter substitution
-#define SS_DIM @@SS_DIM@@
-#define SS_ETA {@@SS_ETA@@}
-#define SS_LB {@@SS_LB@@}
-#define SS_UB {@@SS_UB@@}
-
-// Priority directions (TODO: should also come from config)
+#define T_MAX 1200.0
+#define T_BRAKE_MIN -1800.0
+#define T_BRAKE_MAX -2400.0
+#define M_MIN 2000.0
+#define M_MAX 2500.0
+#define R_W_MIN 0.30
+#define R_W_MAX 0.35
+#define ALPHA_MIN 300.0
+#define ALPHA_MAX 350.0
+#define BETA_MIN 0.10
+#define BETA_MAX 0.25
+#define GAMMA_MIN 0.30
+#define GAMMA_MAX 0.65
+#define H_MIN_3D 0.0
+#define H_MAX_3D 80.0
+#define V_MIN_3D 0.0
+#define V_MAX_3D 20.0
+#define H_RES_3D 0.8
+#define V_RES_3D 0.4
 #define X_PRIORITY_0 0
 #define X_PRIORITY_1 1
 #define X_PRIORITY_2 0
+
+#define SS_MIN {H_MIN_3D, V_MIN_3D, V_MIN_3D}
+#define SS_MAX {H_MAX_3D, V_MAX_3D, V_MAX_3D}
+#define SS_RES {H_RES_3D, V_RES_3D, V_RES_3D}
 #define SS_PRIORITY {X_PRIORITY_0, X_PRIORITY_1, X_PRIORITY_2}
+
 
 // ODE solver parameters
 #define NUM_STEPS 1000
-#define SAMPLING_TIME 0.4f
+#define SAMPLING_TIME 0.4
+#define SS_DIM 3
 
 
 ///TODO: get this from the user
@@ -107,10 +109,9 @@ void solve3DDynamicsWorstCase(float* x, float dt, float* x_plus) {
 }
 
 
+///TODO: generalize this to n-dim
 /**
  * Convert flattened index to multi-dimensional indices
- * Convention: idx[2] is fastest-varying (innermost loop) for 3D
- * flat_idx = (idx[2]-1) + (idx[1]-1)*numCells[2] + (idx[0]-1)*numCells[2]*numCells[1]
  */
 void unflattenIndex(int flat_idx, int state_dim, const unsigned int* x_numCells, int* idx) {
     if (state_dim == 2) {
@@ -124,10 +125,9 @@ void unflattenIndex(int flat_idx, int state_dim, const unsigned int* x_numCells,
     }
 }
 
+///TODO: generalize this to n-dim
 /**
  * Convert indices to physical state values using priority directions
- * priority=1 means larger values have priority (increasing from min)
- * priority=0 means smaller values have priority (decreasing from max)
  */
 void getPriorityStateAtIdx(int* idx, int state_dim,
                            const float* x_range_min,
@@ -145,9 +145,9 @@ void getPriorityStateAtIdx(int* idx, int state_dim,
     }
 }
 
+///TODO: generalize this to n-dim
 /**
  * Convert physical state values to indices
- * Uses floor() and clamps to valid range [1, numCells]
  */
 void getStateIdx(float* val, int state_dim,
                  const float* x_range_min,
@@ -161,9 +161,9 @@ void getStateIdx(float* val, int state_dim,
         float val_clamped = fmax((float)x_range_min[i], fmin((float)val[i], (float)x_range_max[i]));
         
         if (x_priority[i] == 1) {
-            idx[i] = (unsigned int)floor((val_clamped - x_range_min[i]) / x_res[i]) + 1;
+            idx[i] = (int)floor((val_clamped - x_range_min[i]) / x_res[i]) + 1;
         } else {
-            idx[i] = (unsigned int)floor((x_range_max[i] - val_clamped) / x_res[i]) + 1;
+            idx[i] = (int)floor((x_range_max[i] - val_clamped) / x_res[i]) + 1;
         }
         // Clamp to valid range
         if (idx[i] < 1) idx[i] = 1;
@@ -174,22 +174,21 @@ void getStateIdx(float* val, int state_dim,
 /**
  * Main kernel: Compute worst-case next state for each grid cell
  * 
- * @param next_state_table: Output buffer (total_states * SS_DIM integers)
+ * @param next_state_table: Output buffer (total_states * 3 integers)
  */
 __kernel void precompute_transitions(
-    __global unsigned int* next_state_table                      // Size: |X| * SS_DIM
+    __global unsigned int* next_state_table                      // Size: |X| 
 ) {
     int flat_idx = get_global_id(0);
 
-    const float x_range_min[SS_DIM] = SS_LB;
-    const float x_range_max[SS_DIM] = SS_UB;
-    const float x_res[SS_DIM] = SS_ETA;
+    const float x_range_min[SS_DIM] = SS_MIN;
+    const float x_range_max[SS_DIM] = SS_MAX;
+    const float x_res[SS_DIM] = SS_RES;
     const int x_priority[SS_DIM] = SS_PRIORITY;    
     
-    // Note: pFaces SDK adds +1 to include both endpoints (lb and ub)
     unsigned int x_numCells[SS_DIM];
     for (int i = 0; i < SS_DIM; ++i) {
-        x_numCells[i] = (unsigned int)ceil((x_range_max[i] - x_range_min[i]) / x_res[i]) + 1;
+        x_numCells[i] = ceil((x_range_max[i] - x_range_min[i]) / x_res[i]) + 1;
     }
         
     // Un-flatten index to get multi-dimensional indices
