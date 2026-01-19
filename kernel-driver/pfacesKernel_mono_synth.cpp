@@ -215,13 +215,27 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 		instructionList.push_back(instr_hostFuncSaveTransitions);
 	}
 
+    // Benchmark initialization
+    instructionList.push_back(std::make_shared<pfacesInstruction>());
+    instructionList.back()->setAsBlockingSyncPoint();
+    
+    instr_hostFuncBenchmarkStart->setAsHostFunction(pfacesKernel_mono_synth::benchmarkStart, "benchmarkStart");
+    instructionList.push_back(instr_hostFuncBenchmarkStart);
+    
+    instructionList.push_back(std::make_shared<pfacesInstruction>());
+    instructionList.back()->setAsBlockingSyncPoint();
+
+    size_t benchmark_loop_start = instructionList.size();
+
     // Safe set iteration
-    instructionList.push_back(instr_BlockingSyncPoint);
+    instructionList.push_back(std::make_shared<pfacesInstruction>());
+    instructionList.back()->setAsBlockingSyncPoint();
+    
     instr_hostFuncInitSafeSet->setAsHostFunction(pfacesKernel_mono_synth::initSafeSet, "initSafeSet");
     instructionList.push_back(instr_hostFuncInitSafeSet);
     
-    instructionList.push_back(instr_logOff);
-    instructionList.push_back(instr_BlockingSyncPoint);
+    instructionList.push_back(std::make_shared<pfacesInstruction>());
+    instructionList.back()->setAsBlockingSyncPoint();
 
     size_t loop_start = instructionList.size();
     instr_hostFuncPrepareSafeSetIteration->setAsHostFunction(pfacesKernel_mono_synth::prepareSafeSetIteration, "prepareSafeSetIteration");
@@ -236,20 +250,39 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
         instructionList.push_back(instr);
     }
     instructionList.push_back(instr_readUnsafeFlags);
-    instructionList.push_back(instr_BlockingSyncPoint);
+    
+    instructionList.push_back(std::make_shared<pfacesInstruction>());
+    instructionList.back()->setAsBlockingSyncPoint();
+    
     instr_hostFuncProcessSafeSetUpdate->setAsHostFunction(pfacesKernel_mono_synth::processSafeSetUpdate, "processSafeSetUpdate");
     instructionList.push_back(instr_hostFuncProcessSafeSetUpdate);
 
     instr_jumpToSafeSetStart->setAsJumpNe(loop_start);
     instructionList.push_back(instr_jumpToSafeSetStart);
-    instructionList.push_back(instr_logOn);
-	instructionList.push_back(instr_BlockingSyncPoint);
+
+    // Benchmark next run
+    instructionList.push_back(std::make_shared<pfacesInstruction>());
+    instructionList.back()->setAsBlockingSyncPoint();
+
+    instr_hostFuncBenchmarkNext->setAsHostFunction(pfacesKernel_mono_synth::benchmarkNext, "benchmarkNext");
+    instructionList.push_back(instr_hostFuncBenchmarkNext);
+    
+    instructionList.push_back(std::make_shared<pfacesInstruction>());
+    instructionList.back()->setAsBlockingSyncPoint();
+
+    instr_jumpToBenchmarkStart->setAsJumpNe(benchmark_loop_start);
+    instructionList.push_back(instr_jumpToBenchmarkStart);
+    
+    instructionList.push_back(std::make_shared<pfacesInstruction>());
+    instructionList.back()->setAsBlockingSyncPoint();
 	
 	parallelProgram.m_Universal_globalNDRange = parallelProgram.m_Process_globalNDRange = ndrPrecompute;
 	parallelProgram.m_Universal_offsetNDRange = parallelProgram.m_Process_offsetNDRange = ndrOffset;
     parallelProgram.m_compilerDefinesList.push_back({"SS_DIM", std::to_string(m_spCfg->getSsDim())});
     parallelProgram.m_compilerDefinesList.push_back({"TOTAL_STATES", std::to_string(x_flat_width)});
-	parallelProgram.m_dataPool = dataPool;
+	
+    // Point parallelProgram.m_dataPool to our allocated dataPool
+    parallelProgram.m_dataPool = dataPool;
 	parallelProgram.m_spInstructionList = instructionList;
 }
 
@@ -257,19 +290,25 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 
 size_t pfacesKernel_mono_synth::initSafeSet(void* pPackedKernel, void* pPackedParallelProgram) {
     pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
-    int ss_dim = pKernel->m_spCfg->getSsDim();
-    const int max_basis_elements = 2000;
-
-    pKernel->m_safe_set_basis.assign(max_basis_elements * ss_dim, 0);
-    pKernel->m_safe_set_flat_indices.assign(max_basis_elements, 0);
+    pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
     
-    // Corner of the box
-    std::vector<cl_ulong> X_width = pKernel->X_widthPerDimension;
-    for (int i = 0; i < ss_dim; ++i) {
-        pKernel->m_safe_set_basis[i] = (int)X_width[i];
+    pKernel->m_ss_dim = pKernel->m_spCfg->getSsDim();
+    
+    // Allocate seen_neighbors once (persists across benchmark runs)
+    if (!pKernel->m_seen_neighbors) {
+        pKernel->m_seen_neighbors = new unsigned char[pKernel->x_flat_width];
+    }
+    
+    // Zero the fixed arrays (fast memset)
+    std::memset(pKernel->m_safe_set_basis, 0, sizeof(pKernel->m_safe_set_basis));
+    std::memset(pKernel->m_safe_set_flat_indices, 0, sizeof(pKernel->m_safe_set_flat_indices));
+    
+    // Initialize to corner of the box
+    for (int i = 0; i < pKernel->m_ss_dim; ++i) {
+        pKernel->m_safe_set_basis[i] = (int)pKernel->X_widthPerDimension[i];
     }
     pKernel->m_safe_set_size = 1;
-    pKernel->m_safe_set_flat_indices[0] = pKernel->flattenIndex(pKernel->m_safe_set_basis.data());
+    pKernel->m_safe_set_flat_indices[0] = pKernel->flattenIndex(pKernel->m_safe_set_basis);
     
     pKernel->m_iterations = 0;
     pKernel->m_compute_start = std::chrono::high_resolution_clock::now();
@@ -280,17 +319,17 @@ size_t pfacesKernel_mono_synth::initSafeSet(void* pPackedKernel, void* pPackedPa
 size_t pfacesKernel_mono_synth::prepareSafeSetIteration(void* pPackedKernel, void* pPackedParallelProgram) {
     pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
     pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
-    int ss_dim = pKernel->m_spCfg->getSsDim();
+    const int ss_dim = pKernel->m_ss_dim;
 
     pKernel->m_iterations++;
 
-    // Copy to pool
+    // Direct copy to data pool (no intermediate vectors)
     int* pBasisFlatIdx = (int*)pParallelProgram->m_dataPool[1].first;
     int* pBasisList = (int*)pParallelProgram->m_dataPool[2].first;
     int* pBasisListSize = (int*)pParallelProgram->m_dataPool[3].first;
     
-    std::memcpy(pBasisFlatIdx, pKernel->m_safe_set_flat_indices.data(), pKernel->m_safe_set_size * sizeof(int));
-    std::memcpy(pBasisList, pKernel->m_safe_set_basis.data(), pKernel->m_safe_set_size * ss_dim * sizeof(int));
+    std::memcpy(pBasisFlatIdx, pKernel->m_safe_set_flat_indices, pKernel->m_safe_set_size * sizeof(int));
+    std::memcpy(pBasisList, pKernel->m_safe_set_basis, pKernel->m_safe_set_size * ss_dim * sizeof(int));
     *pBasisListSize = pKernel->m_safe_set_size;
 
     // Update ND-Range
@@ -306,79 +345,87 @@ size_t pfacesKernel_mono_synth::processSafeSetUpdate(void* pPackedKernel, void* 
     pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
     pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
     
-    int ss_dim = pKernel->m_spCfg->getSsDim();
-    int total_states = pKernel->x_flat_width;
-    const int max_basis_elements = 2000;
     int* pUnsafeFlags = (int*)pParallelProgram->m_dataPool[4].first;
+    int added = pKernel->updateSafeSet(pUnsafeFlags);
 
-    int added = pKernel->updateSafeSet(pUnsafeFlags, pKernel->m_safe_set_basis, pKernel->m_safe_set_flat_indices, 
-                                      pKernel->m_safe_set_size, ss_dim, total_states, max_basis_elements);
-
-    std::cout << "Iteration " << pKernel->m_iterations << ": Basis size = " << pKernel->m_safe_set_size << "\r" << std::flush;
-
-    if (added == 0 || pKernel->m_safe_set_size >= max_basis_elements) {
+    if (added == 0) {
         auto compute_end = std::chrono::high_resolution_clock::now();
         double time_ms = std::chrono::duration<double, std::milli>(compute_end - pKernel->m_compute_start).count();
-        std::cout << "\nSafe Set Computation Finished [Iterations: " << pKernel->m_iterations 
-                  << ", Basis: " << pKernel->m_safe_set_size 
-                  << ", Time: " << (int)time_ms << " ms]" << std::endl;
-        return 0; // Stop loop
+        
+        pKernel->m_benchmark_total_time_ms += time_ms;
+        pKernel->m_benchmark_total_iterations += pKernel->m_iterations;
+        pKernel->m_benchmark_current_run++;
+
+        std::cout << "Run " << pKernel->m_benchmark_current_run << "/" << pKernel->m_benchmark_count << ": " 
+                  << pKernel->m_iterations << " iterations, " 
+                  << pKernel->m_safe_set_size << " basis, " 
+                  << (int)time_ms << " ms" << std::endl;
+        
+        return 0; // Stop inner loop
     }
 
-    return added; // Continue loop
+    return added; // Continue inner loop
+}
+
+size_t pfacesKernel_mono_synth::benchmarkStart(void* pPackedKernel, void* pPackedParallelProgram) {
+    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
+    pKernel->m_benchmark_current_run = 0;
+    pKernel->m_benchmark_total_time_ms = 0;
+    pKernel->m_benchmark_total_iterations = 0;
+    std::cout << "\nStarting Performance Benchmark (" << pKernel->m_benchmark_count << " runs)...\n" << std::endl;
+    return 0;
+}
+
+size_t pfacesKernel_mono_synth::benchmarkNext(void* pPackedKernel, void* pPackedParallelProgram) {
+    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
+
+    if (pKernel->m_benchmark_current_run < pKernel->m_benchmark_count) {
+        return 1; // Continue loop
+    } else {
+        std::cout << "\nBenchmark Finished!" << std::endl;
+        std::cout << "Average: " << pKernel->m_benchmark_total_iterations / pKernel->m_benchmark_count << " iterations, " 
+                  << (int)(pKernel->m_benchmark_total_time_ms / pKernel->m_benchmark_count) << " ms" << std::endl;
+        return 0; // Stop loop
+    }
 }
 
 int pfacesKernel_mono_synth::flattenIndex(const int* idx) const {
     int result = 0, multiplier = 1;
-    int state_dim = m_spCfg->getSsDim();
-    for (int i = 0; i < state_dim; ++i) {
+    for (int i = 0; i < m_ss_dim; ++i) {
         result += (idx[i] - 1) * multiplier;
         multiplier *= (int)X_widthPerDimension[i];
     }
     return result;
 }
 
-bool pfacesKernel_mono_synth::xInSafeSet(const int* x_idx, const std::vector<int>& safe_set_basis, int safe_set_size, int state_dim) const {
-    if (x_idx[0] == -1) return false;
-    for (int i = safe_set_size - 1; i >= 0; --i) {
-        bool dominated = true;
-        for (int j = 0; j < state_dim; ++j) {
-            if (x_idx[j] > safe_set_basis[i * state_dim + j]) {
-                dominated = false;
-                break;
-            }
-        }
-        if (dominated) return true;
-    }
-    return false;
-}
+int pfacesKernel_mono_synth::updateSafeSet(int* unsafe_flags) {
+    const int ss_dim = m_ss_dim;
+    const int total_states = x_flat_width;
+    
+    // Clear persistent buffers (fast memset, no allocation)
+    std::memset(m_unsafe_mask, 0, m_safe_set_size);
+    std::memset(m_seen_neighbors, 0, total_states);
 
-int pfacesKernel_mono_synth::updateSafeSet(int* unsafe_flags, std::vector<int>& safe_set_basis, std::vector<int>& safe_set_flat_indices, 
-                                          int& safe_set_size, int state_dim, int total_states, int max_basis_elements) {
-    const int MAX_STATE_DIM = 3;
-    std::vector<unsigned char> unsafe_mask(safe_set_size, 0);
-    std::vector<unsigned char> seen_neighbors(total_states, 0);
-    std::vector<int> neighbor_buffer(max_basis_elements * state_dim * state_dim, 0);
-
+    // Pass 1: Find unsafe elements and generate unique neighbors
     int neighbor_count = 0;
-    for (int i = 0; i < safe_set_size; ++i) {
+    for (int i = 0; i < m_safe_set_size; ++i) {
         if (!unsafe_flags[i]) continue;
-        unsafe_mask[i] = 1;
+        m_unsafe_mask[i] = 1;
 
-        for (int j = 0; j < state_dim; ++j) {
-            int val = safe_set_basis[i * state_dim + j];
+        for (int j = 0; j < ss_dim; ++j) {
+            const int val = m_safe_set_basis[i * ss_dim + j];
             if (val <= 1) continue;
 
             int coords[MAX_STATE_DIM];
-            for (int k = 0; k < state_dim; ++k) {
-                coords[k] = safe_set_basis[i * state_dim + k] - (j == k ? 1 : 0);
+            for (int k = 0; k < ss_dim; ++k) {
+                coords[k] = m_safe_set_basis[i * ss_dim + k] - (j == k ? 1 : 0);
             }
 
-            int flat_idx = flattenIndex(coords);
-            if (!seen_neighbors[flat_idx]) {
-                seen_neighbors[flat_idx] = 1;
-                int* neighbor = &neighbor_buffer[neighbor_count * state_dim];
-                for (int k = 0; k < state_dim; ++k) {
+            const int flat_idx = flattenIndex(coords);
+            if (!m_seen_neighbors[flat_idx]) {
+                m_seen_neighbors[flat_idx] = 1;
+                int* neighbor = &m_neighbor_buffer[neighbor_count * ss_dim];
+                for (int k = 0; k < ss_dim; ++k) {
                     neighbor[k] = coords[k];
                 }
                 neighbor_count++;
@@ -386,30 +433,50 @@ int pfacesKernel_mono_synth::updateSafeSet(int* unsafe_flags, std::vector<int>& 
         }
     }
 
+    // Pass 2: Compact safe elements (remove unsafe)
     int write_pos = 0;
-    for (int i = 0; i < safe_set_size; ++i) {
-        if (!unsafe_mask[i]) {
+    for (int i = 0; i < m_safe_set_size; ++i) {
+        if (!m_unsafe_mask[i]) {
             if (write_pos != i) {
-                for (int j = 0; j < state_dim; ++j) {
-                    safe_set_basis[write_pos * state_dim + j] = safe_set_basis[i * state_dim + j];
+                for (int j = 0; j < ss_dim; ++j) {
+                    m_safe_set_basis[write_pos * ss_dim + j] = m_safe_set_basis[i * ss_dim + j];
                 }
-                safe_set_flat_indices[write_pos] = safe_set_flat_indices[i];
+                m_safe_set_flat_indices[write_pos] = m_safe_set_flat_indices[i];
             }
             write_pos++;
         }
     }
-    safe_set_size = write_pos;
+    m_safe_set_size = write_pos;
 
+    // Pass 3: Add new neighbors (use seen_neighbors for O(1) redundancy check)
     int added = 0;
     for (int ni = 0; ni < neighbor_count; ++ni) {
-        int* neighbor = &neighbor_buffer[ni * state_dim];
-        if (!xInSafeSet(neighbor, safe_set_basis, safe_set_size, state_dim)) {
-            if (safe_set_size >= max_basis_elements) break;
-            for (int j = 0; j < state_dim; ++j) {
-                safe_set_basis[safe_set_size * state_dim + j] = neighbor[j];
+        int* neighbor = &m_neighbor_buffer[ni * ss_dim];
+        const int flat_idx = flattenIndex(neighbor);
+        
+        // Check if already dominated by existing basis elements
+        bool dominated = false;
+        for (int i = m_safe_set_size - 1; i >= 0; --i) {
+            bool is_dominated = true;
+            for (int j = 0; j < ss_dim; ++j) {
+                if (neighbor[j] > m_safe_set_basis[i * ss_dim + j]) {
+                    is_dominated = false;
+                    break;
+                }
             }
-            safe_set_flat_indices[safe_set_size] = flattenIndex(neighbor);
-            safe_set_size++;
+            if (is_dominated) {
+                dominated = true;
+                break;
+            }
+        }
+        
+        if (!dominated) {
+            if (m_safe_set_size >= MAX_BASIS_ELEMENTS) break;
+            for (int j = 0; j < ss_dim; ++j) {
+                m_safe_set_basis[m_safe_set_size * ss_dim + j] = neighbor[j];
+            }
+            m_safe_set_flat_indices[m_safe_set_size] = flat_idx;
+            m_safe_set_size++;
             added++;
         }
     }

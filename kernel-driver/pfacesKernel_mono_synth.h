@@ -83,6 +83,9 @@ private:
   std::shared_ptr<pfacesInstruction> instr_writeBasisListSize = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_logOff = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_logOn = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_hostFuncBenchmarkStart = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_hostFuncBenchmarkNext = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_jumpToBenchmarkStart = std::make_shared<pfacesInstruction>();
 
   size_t x_flat_width;
 
@@ -107,19 +110,33 @@ public:
   static size_t initSafeSet(void* pPackedKernel, void* pPackedParallelProgram);
   static size_t prepareSafeSetIteration(void* pPackedKernel, void* pPackedParallelProgram);
   static size_t processSafeSetUpdate(void* pPackedKernel, void* pPackedParallelProgram);
+  static size_t benchmarkStart(void* pPackedKernel, void* pPackedParallelProgram);
+  static size_t benchmarkNext(void* pPackedKernel, void* pPackedParallelProgram);
 
   /* internal helper for safe set */
   int flattenIndex(const int* idx) const;
-  bool xInSafeSet(const int* x_idx, const std::vector<int>& safe_set_basis, int safe_set_size, int state_dim) const;
-  int updateSafeSet(int* unsafe_flags, std::vector<int>& safe_set_basis, std::vector<int>& safe_set_flat_indices, 
-                    int& safe_set_size, int state_dim, int total_states, int max_basis_elements);
+  int updateSafeSet(int* unsafe_flags);
 
-  /* safe set state */
-  std::vector<int> m_safe_set_basis;
-  std::vector<int> m_safe_set_flat_indices;
-  int m_safe_set_size;
-  int m_iterations;
+  /* safe set state - fixed-size for zero allocation overhead */
+  static constexpr int MAX_BASIS_ELEMENTS = 2000;
+  static constexpr int MAX_STATE_DIM = 3;
+  int m_safe_set_basis[MAX_BASIS_ELEMENTS * MAX_STATE_DIM];
+  int m_safe_set_flat_indices[MAX_BASIS_ELEMENTS];
+  int m_safe_set_size = 0;
+  int m_iterations = 0;
+  int m_ss_dim = 2;
   std::chrono::high_resolution_clock::time_point m_compute_start;
+  
+  /* persistent work buffers - reused across iterations */
+  unsigned char m_unsafe_mask[MAX_BASIS_ELEMENTS];
+  unsigned char* m_seen_neighbors = nullptr;  // Allocated once based on total_states
+  int m_neighbor_buffer[MAX_BASIS_ELEMENTS * MAX_STATE_DIM * MAX_STATE_DIM];
+  
+  /* benchmark results */
+  int m_benchmark_count = 10;
+  int m_benchmark_current_run = 0;
+  double m_benchmark_total_time_ms = 0;
+  int m_benchmark_total_iterations = 0;
 
   /* providing implementation of the virtual method: getParameterList*/
   std::pair<std::vector<std::string>, std::vector<std::string>> getParameterList();
