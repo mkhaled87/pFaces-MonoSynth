@@ -1,9 +1,9 @@
 /*
-* mono_synth.gpu.cl
+* mono_synth.cpu.cl
 *
-*  date    : 18.11.2017
+*  date    : 20.07.2017
 *  author  : M. Khaled | Hybrid control systems @ Technical University of Munich, Germany
-*  about   : an OpenCL kernel (optimized for GPU/HWA) used to construct symbolic abstraction of
+*  about   : an OpenCL kernel (optimized for CPUs) used to construct symbolic abstraction of
 * 	         dynamical systems using [Growth Bound] and synthesis symbolic controllers using some
 *			 fixed-point (FP) operations on the symbolic model constructed by over-approximating
 *			 the reachabile sets (OARS).
@@ -13,3 +13,6 @@
 
 // pFaces-Including a KERNEL-Function: precompute_transitions	--- parallel algorithm in (X)
 @pfaces-include:"precompute_transitions.cl"
+
+// pFaces-Including a KERNEL-Function: check_basis_safety
+@pfaces-include:"check_basis_safety.cl"

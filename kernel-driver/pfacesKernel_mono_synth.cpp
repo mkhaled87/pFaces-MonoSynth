@@ -9,6 +9,9 @@
 #include <fstream>
 #include <sstream>
 #include <ctime>
+#include <cstring>
+#include <chrono>
+#include <algorithm>
 
 #include "pfacesKernel_mono_synth.h"
 #include <filesystem>
@@ -59,17 +62,11 @@ size_t pfacesKernel_mono_synth::loadTransitionTable(void* pPackedKernel, void* p
 	std::ifstream cache_in(file_path, std::ios::binary);
         
 	if (cache_in.good()) {
-		std::cout << "Loading transitions from file: " << file_path << std::endl;
 		int cached_total_states;
 		cache_in.read(reinterpret_cast<char*>(&cached_total_states), sizeof(int));
 		
 		if (cached_total_states == number_of_states) {
-			cache_in.read(reinterpret_cast<char*>(pDataTransitionTable), 
-							sizeof(cl_int) * number_of_elements);
-			cache_in.close();
-		}
-		else {
-			std::cerr << "Cached transitions do not match the current problem size. Recomputing transitions." << std::endl;
+			cache_in.read(reinterpret_cast<char*>(pDataTransitionTable), sizeof(cl_int) * number_of_elements);
 		}
 		cache_in.close();
 	}
@@ -129,169 +126,294 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 		m_spCfg->getSsLb(), m_spCfg->getSsUb(), 
 		m_spCfg->getSsErr(), X_widthPerDimension).toInt();
 
-	// Loading the memory fingerprint of the abstract function
-	auto precomputeTransitionsFunctionArgs = pfacesKernelFunctionArguments::loadFromFile(
-		spLaunchState->getKernelPackPath() + "mono_synth.mem",						/* memory config file with the function memory fingerprint */
-		KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME,  						/* name of the function to add */
-		{KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_NEXT_STATE_TABLE_NAME},	/* list of the names of its args */
-		false																		/* do not save memory render files */
-	);
-	precomputeTransitionsFunctionArgs.m_baseTypeSize = {sizeof(cl_int)};
-	precomputeTransitionsFunctionArgs.m_baseTypeMultiple = {x_flat_width * ssDim};
-	pfacesKernelFunction precomputeTransitionsFunction(KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME, precomputeTransitionsFunctionArgs);
-
-	// adding the function to the kernel
-	addKernelFunction(precomputeTransitionsFunction);
+	// Loading the memory fingerprint of the abstract functions from .mem files
+    auto precomputeArgs = pfacesKernelFunctionArguments::loadFromFile(
+        spLaunchState->getKernelPackPath() + "precompute_transitions.mem",
+        KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME,
+        {KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_NEXT_STATE_TABLE_NAME},
+        false);
+    precomputeArgs.m_baseTypeMultiple = { (size_t)(x_flat_width * ssDim) };
+	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME, precomputeArgs));
 	
-	// updating the list of params
-	auto params_and_vals = getParameterList();
-	updateParameters(params_and_vals.first, params_and_vals.second);	
+	updateParameters(getParameterList().first, getParameterList().second);
+
+    auto safetyArgs = pfacesKernelFunctionArguments::loadFromFile(
+        spLaunchState->getKernelPackPath() + "check_basis_safety.mem",
+        KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_NAME,
+        { KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_BASIS_FLAT_IDX_NAME, 
+          KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_NEXT_STATE_TABLE_NAME, 
+          KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_BASIS_LIST_NAME, 
+          KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_BASIS_LIST_SIZE_NAME,
+          KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_UNSAFE_FLAGS_NAME },
+        false);
+    safetyArgs.m_baseTypeMultiple = { 2000, (size_t)(x_flat_width * ssDim), (size_t)(2000 * ssDim), 1, 2000 };
+	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_NAME, safetyArgs));
 }
 
 /* providing implementation of the driver of the kernel */
 void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& parallelProgram) {
-
-	// A parallel advisor used for task scheduling
 	pfacesParallelAdvisor parallelAdvisor(parallelProgram.getMachine(), parallelProgram.getTargetDevicesIndicies());
 	size_t beVerboseLevel = parallelProgram.m_beVerboseLevel;
 
-	// X space cardinality
-	size_t problem_x_width = x_flat_width;
+	// Distribute jobs
+	cl::NDRange ndrPrecompute{x_flat_width, 1, 1}, ndrCheckSafety{2000, 1, 1}, ndrOffset{0, 0, 0};
+	job_execPrecomputeTransition = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_IDX, ndrPrecompute, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
+    job_execCheckBasisSafety = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_IDX, ndrCheckSafety, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
 
-	// Print Universal XU-space information
-	if (beVerboseLevel >= 2) {
-		std::cout << "Universal X-space has " << problem_x_width << " symbols: ";
-		pfacesUtils::PrintVector(X_widthPerDimension, 'x');
-	}
+	if (beVerboseLevel >= 2)
+		parallelAdvisor.printTaskSchedulingReport(parallelProgram.getMachine(), { KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME }, { job_execPrecomputeTransition }, x_flat_width);
 
-	cl::NDRange ndRangeRunPrecomputeTrans{problem_x_width, 1, 1};
-	cl::NDRange ndRangeOffsetPrecomputeTrans{0, 0, 0};
-	job_execPrecomputeTransition = parallelAdvisor.distributeJob(
-		*this, KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_IDX, ndRangeRunPrecomputeTrans, ndRangeOffsetPrecomputeTrans,
-		parallelProgram.m_isFixedJobDistribution, 
-		parallelProgram.m_fixedJobDistribution, 
-		///TODO: optimize this later
-		true, false, false);
-
-	// print the task-scheduling report
-	if (beVerboseLevel >= 2){
-		parallelAdvisor.printTaskSchedulingReport(
-			parallelProgram.getMachine(),
-			{ KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME },
-			{ job_execPrecomputeTransition },
-			problem_x_width
-		);
-	}
-
-	// Allocating the memory used for abstraction/synthesis
+	// Memory allocation
 	std::vector<std::pair<char*, size_t>> dataPool;
-	///TODO: double check this
-	const int numInstances = 1;
-	pFacesMemoryAllocationReport memReport = allocateMemory(dataPool, parallelProgram.getMachine(), parallelProgram.getTargetDevicesIndicies(), numInstances, false);
-	if (beVerboseLevel >= 2) {
-		memReport.PrintReport();
-	}	
+	pFacesMemoryAllocationReport memReport = allocateMemory(dataPool, parallelProgram.getMachine(), parallelProgram.getTargetDevicesIndicies(), 1, false);
+    if (beVerboseLevel >= 2) memReport.PrintReport();
+	const cl::Device& dataAccessDevice = parallelProgram.getTargetDevices()[0];
 
-	// First device in the list will be used for memory access
-	const cl::Device&  dataAccessDevice = parallelProgram.getTargetDevices()[0];
+	// IO jobs
+    job_readNextStateTable = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, 0, 1, 0);
+    job_writeNextStateTable = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 0, 1, 0);
+    job_readUnsafeFlags = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, 1, 5, 4);
+    job_writeBasisFlatIdx = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 1, 5, 0);
+    job_writeBasisList = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 1, 5, 2);
+    job_writeBasisListSize = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 1, 5, 3);
 
-	// Initialize jobs/instructions for data read/write of the transition table
-	job_readNextStateTable = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice);
-	job_readNextStateTable->setKernelFunctionIdx(KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_IDX, KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NUM_ARGS);
-	job_readNextStateTable->setKernelFunctionArgIdx(KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_NEXT_STATE_TABLE_IDX);
+    instr_readNextStateTable->setAsReadDeviceBuffer(job_readNextStateTable);
+    instr_writeNextStateTable->setAsWriteDeviceBuffer(job_writeNextStateTable);
+    instr_readUnsafeFlags->setAsReadDeviceBuffer(job_readUnsafeFlags);
+    instr_writeBasisFlatIdx->setAsWriteDeviceBuffer(job_writeBasisFlatIdx);
+    instr_writeBasisList->setAsWriteDeviceBuffer(job_writeBasisList);
+    instr_writeBasisListSize->setAsWriteDeviceBuffer(job_writeBasisListSize);
 
-	job_writeNextStateTable = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice);
-	job_writeNextStateTable->setKernelFunctionIdx(KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_IDX, KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NUM_ARGS);
-	job_writeNextStateTable->setKernelFunctionArgIdx(KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_NEXT_STATE_TABLE_IDX);
-
-	instr_readNextStateTable->setAsReadDeviceBuffer(job_readNextStateTable);
-	instr_writeNextStateTable->setAsWriteDeviceBuffer(job_writeNextStateTable);
-
-	// Configure other instructions
 	instr_BlockingSyncPoint->setAsBlockingSyncPoint();
+    instr_logOff->setAsLogOff();
+    instr_logOn->setAsLogOn();
 
-	// if using the direct access to host memory, we add this instruction
-	if (parallelProgram.m_useHostMemory) {
-		instructionList.push_back(instr_writeNextStateTable);
-	}
-	if (parallelProgram.countTargetDevices() > 1) {
-		instructionList.push_back(instr_BlockingSyncPoint);
-	}
-	// 1. Determine if we have a VALID cache
+	// Cache check
 	bool useCache = false;
 	std::ifstream cache_check(cache_file, std::ios::binary);
 	if (cache_check.good()) {
-		int cached_total_states;
-		cache_check.read(reinterpret_cast<char*>(&cached_total_states), sizeof(int));
-		if (cached_total_states == (int)x_flat_width) {
-			useCache = true;
-		}
+		int cached_states;
+		cache_check.read(reinterpret_cast<char*>(&cached_states), sizeof(int));
+		if (cached_states == (int)x_flat_width) useCache = true;
 	}
 	cache_check.close();
 
 	if (useCache) {
-		// PATH A: LOAD FROM CACHE
-		if (beVerboseLevel >= 2) {
-			std::cout << "Loading transitions from valid cache: " << cache_file << std::endl;
-		}
-
-		// 1. Host function to read file -> Host Data Pool
 		instr_hostFuncLoadNextStateTable->setAsHostFunction(pfacesKernel_mono_synth::loadTransitionTable, "loadTransitionTable");
 		instructionList.push_back(instr_hostFuncLoadNextStateTable);
-		
-		// 2. Sync to ensure file is read before writing to device
-		instructionList.push_back(instr_BlockingSyncPoint);
-
-		// 3. Write Host Data Pool -> Device Buffer
 		instructionList.push_back(instr_writeNextStateTable);
 	} else {
-		// PATH B: COMPUTE FROM KERNEL
-		if (beVerboseLevel >= 2) {
-			if (std::ifstream(cache_file).good()) {
-				std::cout << "Cache exists but is invalid for current configuration. Recomputing..." << std::endl;
-			} else {
-				std::cout << "No cache found. Computing transitions..." << std::endl;
-			}
+		for (auto& job : job_execPrecomputeTransition) {
+			auto instr = std::make_shared<pfacesInstruction>();
+			instr->setAsDeviceExecute(job);
+			instructionList.push_back(instr);
 		}
-
-		// 1. The first task: PrecomputeTransitions
-		for (size_t i = 0; i < job_execPrecomputeTransition.size(); i++) {
-			std::shared_ptr<pfacesInstruction> tmpExecuteInstr = std::make_shared<pfacesInstruction>();
-			tmpExecuteInstr->setAsDeviceExecute(job_execPrecomputeTransition[i]);
-			instructionList.push_back(tmpExecuteInstr);
-		}
-
-		// 2. A Barrier to force all devices to finish computation.
-		if (parallelProgram.countTargetDevices() > 1) {
-			instructionList.push_back(instr_BlockingSyncPoint);
-		}
-
-		// 3. Read Device Buffer -> Host Data Pool
+		if (parallelProgram.countTargetDevices() > 1) instructionList.push_back(instr_BlockingSyncPoint);
 		instructionList.push_back(instr_readNextStateTable);
-
-		// 4. Sync to make sure data is read back to host
 		instructionList.push_back(instr_BlockingSyncPoint);
-
-		// 5. Call host function to save transitions Host Data Pool -> File
 		instr_hostFuncSaveTransitions->setAsHostFunction(pfacesKernel_mono_synth::saveTransitionTable, "saveTransitionTable");
 		instructionList.push_back(instr_hostFuncSaveTransitions);
 	}
 
-	// Last instruction
+    // Safe set iteration
+    instructionList.push_back(instr_BlockingSyncPoint);
+    instr_hostFuncInitSafeSet->setAsHostFunction(pfacesKernel_mono_synth::initSafeSet, "initSafeSet");
+    instructionList.push_back(instr_hostFuncInitSafeSet);
+    
+    instructionList.push_back(instr_logOff);
+    instructionList.push_back(instr_BlockingSyncPoint);
+
+    size_t loop_start = instructionList.size();
+    instr_hostFuncPrepareSafeSetIteration->setAsHostFunction(pfacesKernel_mono_synth::prepareSafeSetIteration, "prepareSafeSetIteration");
+    instructionList.push_back(instr_hostFuncPrepareSafeSetIteration);
+    instructionList.push_back(instr_writeBasisFlatIdx);
+    instructionList.push_back(instr_writeBasisList);
+    instructionList.push_back(instr_writeBasisListSize);
+
+    for (auto& job : job_execCheckBasisSafety) {
+        auto instr = std::make_shared<pfacesInstruction>();
+        instr->setAsDeviceExecute(job);
+        instructionList.push_back(instr);
+    }
+    instructionList.push_back(instr_readUnsafeFlags);
+    instructionList.push_back(instr_BlockingSyncPoint);
+    instr_hostFuncProcessSafeSetUpdate->setAsHostFunction(pfacesKernel_mono_synth::processSafeSetUpdate, "processSafeSetUpdate");
+    instructionList.push_back(instr_hostFuncProcessSafeSetUpdate);
+
+    instr_jumpToSafeSetStart->setAsJumpNe(loop_start);
+    instructionList.push_back(instr_jumpToSafeSetStart);
+    instructionList.push_back(instr_logOn);
 	instructionList.push_back(instr_BlockingSyncPoint);
 	
-
-	// setting the execute ranges
-	parallelProgram.m_Universal_globalNDRange = ndRangeRunPrecomputeTrans;
-	parallelProgram.m_Universal_offsetNDRange = ndRangeOffsetPrecomputeTrans;
-	parallelProgram.m_Process_globalNDRange = ndRangeRunPrecomputeTrans;
-	parallelProgram.m_Process_offsetNDRange = ndRangeOffsetPrecomputeTrans;
-
+	parallelProgram.m_Universal_globalNDRange = parallelProgram.m_Process_globalNDRange = ndrPrecompute;
+	parallelProgram.m_Universal_offsetNDRange = parallelProgram.m_Process_offsetNDRange = ndrOffset;
+    parallelProgram.m_compilerDefinesList.push_back({"SS_DIM", std::to_string(m_spCfg->getSsDim())});
+    parallelProgram.m_compilerDefinesList.push_back({"TOTAL_STATES", std::to_string(x_flat_width)});
 	parallelProgram.m_dataPool = dataPool;
 	parallelProgram.m_spInstructionList = instructionList;
+}
 
-	///TODO: Move this as host function when you add the other kernel function
-	std::vector<std::shared_ptr<void>> postExecuteParams;
+/* Safe Set Host Functions */
+
+size_t pfacesKernel_mono_synth::initSafeSet(void* pPackedKernel, void* pPackedParallelProgram) {
+    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
+    int ss_dim = pKernel->m_spCfg->getSsDim();
+    const int max_basis_elements = 2000;
+
+    pKernel->m_safe_set_basis.assign(max_basis_elements * ss_dim, 0);
+    pKernel->m_safe_set_flat_indices.assign(max_basis_elements, 0);
+    
+    // Corner of the box
+    std::vector<cl_ulong> X_width = pKernel->X_widthPerDimension;
+    for (int i = 0; i < ss_dim; ++i) {
+        pKernel->m_safe_set_basis[i] = (int)X_width[i];
+    }
+    pKernel->m_safe_set_size = 1;
+    pKernel->m_safe_set_flat_indices[0] = pKernel->flattenIndex(pKernel->m_safe_set_basis.data());
+    
+    pKernel->m_iterations = 0;
+    pKernel->m_compute_start = std::chrono::high_resolution_clock::now();
+
+    return 0;
+}
+
+size_t pfacesKernel_mono_synth::prepareSafeSetIteration(void* pPackedKernel, void* pPackedParallelProgram) {
+    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
+    pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
+    int ss_dim = pKernel->m_spCfg->getSsDim();
+
+    pKernel->m_iterations++;
+
+    // Copy to pool
+    int* pBasisFlatIdx = (int*)pParallelProgram->m_dataPool[1].first;
+    int* pBasisList = (int*)pParallelProgram->m_dataPool[2].first;
+    int* pBasisListSize = (int*)pParallelProgram->m_dataPool[3].first;
+    
+    std::memcpy(pBasisFlatIdx, pKernel->m_safe_set_flat_indices.data(), pKernel->m_safe_set_size * sizeof(int));
+    std::memcpy(pBasisList, pKernel->m_safe_set_basis.data(), pKernel->m_safe_set_size * ss_dim * sizeof(int));
+    *pBasisListSize = pKernel->m_safe_set_size;
+
+    // Update ND-Range
+    cl::NDRange ndRange((size_t)((pKernel->m_safe_set_size + 127) / 128) * 128, 1, 1);
+    for (auto& job : pKernel->job_execCheckBasisSafety) {
+        job->getTasks()[0]->setNdRangeGlobal(ndRange);
+    }
+
+    return 0;
+}
+
+size_t pfacesKernel_mono_synth::processSafeSetUpdate(void* pPackedKernel, void* pPackedParallelProgram) {
+    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
+    pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
+    
+    int ss_dim = pKernel->m_spCfg->getSsDim();
+    int total_states = pKernel->x_flat_width;
+    const int max_basis_elements = 2000;
+    int* pUnsafeFlags = (int*)pParallelProgram->m_dataPool[4].first;
+
+    int added = pKernel->updateSafeSet(pUnsafeFlags, pKernel->m_safe_set_basis, pKernel->m_safe_set_flat_indices, 
+                                      pKernel->m_safe_set_size, ss_dim, total_states, max_basis_elements);
+
+    std::cout << "Iteration " << pKernel->m_iterations << ": Basis size = " << pKernel->m_safe_set_size << "\r" << std::flush;
+
+    if (added == 0 || pKernel->m_safe_set_size >= max_basis_elements) {
+        auto compute_end = std::chrono::high_resolution_clock::now();
+        double time_ms = std::chrono::duration<double, std::milli>(compute_end - pKernel->m_compute_start).count();
+        std::cout << "\nSafe Set Computation Finished [Iterations: " << pKernel->m_iterations 
+                  << ", Basis: " << pKernel->m_safe_set_size 
+                  << ", Time: " << (int)time_ms << " ms]" << std::endl;
+        return 0; // Stop loop
+    }
+
+    return added; // Continue loop
+}
+
+int pfacesKernel_mono_synth::flattenIndex(const int* idx) const {
+    int result = 0, multiplier = 1;
+    int state_dim = m_spCfg->getSsDim();
+    for (int i = 0; i < state_dim; ++i) {
+        result += (idx[i] - 1) * multiplier;
+        multiplier *= (int)X_widthPerDimension[i];
+    }
+    return result;
+}
+
+bool pfacesKernel_mono_synth::xInSafeSet(const int* x_idx, const std::vector<int>& safe_set_basis, int safe_set_size, int state_dim) const {
+    if (x_idx[0] == -1) return false;
+    for (int i = safe_set_size - 1; i >= 0; --i) {
+        bool dominated = true;
+        for (int j = 0; j < state_dim; ++j) {
+            if (x_idx[j] > safe_set_basis[i * state_dim + j]) {
+                dominated = false;
+                break;
+            }
+        }
+        if (dominated) return true;
+    }
+    return false;
+}
+
+int pfacesKernel_mono_synth::updateSafeSet(int* unsafe_flags, std::vector<int>& safe_set_basis, std::vector<int>& safe_set_flat_indices, 
+                                          int& safe_set_size, int state_dim, int total_states, int max_basis_elements) {
+    const int MAX_STATE_DIM = 3;
+    std::vector<unsigned char> unsafe_mask(safe_set_size, 0);
+    std::vector<unsigned char> seen_neighbors(total_states, 0);
+    std::vector<int> neighbor_buffer(max_basis_elements * state_dim * state_dim, 0);
+
+    int neighbor_count = 0;
+    for (int i = 0; i < safe_set_size; ++i) {
+        if (!unsafe_flags[i]) continue;
+        unsafe_mask[i] = 1;
+
+        for (int j = 0; j < state_dim; ++j) {
+            int val = safe_set_basis[i * state_dim + j];
+            if (val <= 1) continue;
+
+            int coords[MAX_STATE_DIM];
+            for (int k = 0; k < state_dim; ++k) {
+                coords[k] = safe_set_basis[i * state_dim + k] - (j == k ? 1 : 0);
+            }
+
+            int flat_idx = flattenIndex(coords);
+            if (!seen_neighbors[flat_idx]) {
+                seen_neighbors[flat_idx] = 1;
+                int* neighbor = &neighbor_buffer[neighbor_count * state_dim];
+                for (int k = 0; k < state_dim; ++k) {
+                    neighbor[k] = coords[k];
+                }
+                neighbor_count++;
+            }
+        }
+    }
+
+    int write_pos = 0;
+    for (int i = 0; i < safe_set_size; ++i) {
+        if (!unsafe_mask[i]) {
+            if (write_pos != i) {
+                for (int j = 0; j < state_dim; ++j) {
+                    safe_set_basis[write_pos * state_dim + j] = safe_set_basis[i * state_dim + j];
+                }
+                safe_set_flat_indices[write_pos] = safe_set_flat_indices[i];
+            }
+            write_pos++;
+        }
+    }
+    safe_set_size = write_pos;
+
+    int added = 0;
+    for (int ni = 0; ni < neighbor_count; ++ni) {
+        int* neighbor = &neighbor_buffer[ni * state_dim];
+        if (!xInSafeSet(neighbor, safe_set_basis, safe_set_size, state_dim)) {
+            if (safe_set_size >= max_basis_elements) break;
+            for (int j = 0; j < state_dim; ++j) {
+                safe_set_basis[safe_set_size * state_dim + j] = neighbor[j];
+            }
+            safe_set_flat_indices[safe_set_size] = flattenIndex(neighbor);
+            safe_set_size++;
+            added++;
+        }
+    }
+    return added;
 }
 
 /* not providing implementation of the virtual method: configureTuneParallelProgram*/

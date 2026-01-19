@@ -14,3 +14,5 @@
 // pFaces-Including a KERNEL-Function: precompute_transitions	--- parallel algorithm in (X)
 @pfaces-include:"precompute_transitions.cl"
 
+// pFaces-Including a KERNEL-Function: check_basis_safety
+@pfaces-include:"check_basis_safety.cl"
