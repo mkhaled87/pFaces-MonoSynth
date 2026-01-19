@@ -407,6 +407,7 @@ int pfacesKernel_mono_synth::updateSafeSet(int* unsafe_flags) {
     std::memset(m_seen_neighbors, 0, total_states);
 
     // Pass 1: Find unsafe elements and generate unique neighbors
+    // Store which dimension was decremented for each neighbor (for indexed redundancy check)
     int neighbor_count = 0;
     for (int i = 0; i < m_safe_set_size; ++i) {
         if (!unsafe_flags[i]) continue;
@@ -428,6 +429,9 @@ int pfacesKernel_mono_synth::updateSafeSet(int* unsafe_flags) {
                 for (int k = 0; k < ss_dim; ++k) {
                     neighbor[k] = coords[k];
                 }
+                // Store parent info for optimized redundancy check
+                m_neighbor_parent_dim[neighbor_count] = j;
+                m_neighbor_parent_coord[neighbor_count] = val; // Original coord before decrement
                 neighbor_count++;
             }
         }
@@ -448,18 +452,27 @@ int pfacesKernel_mono_synth::updateSafeSet(int* unsafe_flags) {
     }
     m_safe_set_size = write_pos;
 
-    // Pass 3: Add new neighbors (use seen_neighbors for O(1) redundancy check)
+    // Pass 2.5: Rebuild coordinate index for surviving elements
+    rebuildCoordIndex();
+
+    // Pass 3: Add new neighbors using INDEXED redundancy check
+    // By theorem: neighbor n = b - e_j can only be dominated by b' where b'[j] = n[j] = b[j] - 1
     int added = 0;
     for (int ni = 0; ni < neighbor_count; ++ni) {
         int* neighbor = &m_neighbor_buffer[ni * ss_dim];
-        const int flat_idx = flattenIndex(neighbor);
+        const int parent_dim = m_neighbor_parent_dim[ni];
+        const int target_coord = neighbor[parent_dim]; // = parent_coord - 1
         
-        // Check if already dominated by existing basis elements
+        // Only check basis elements with coordinate = target_coord in dimension parent_dim
         bool dominated = false;
-        for (int i = m_safe_set_size - 1; i >= 0; --i) {
+        const int bucket_size = m_bucket_sizes[parent_dim][target_coord];
+        for (int bi = 0; bi < bucket_size; ++bi) {
+            const int basis_idx = m_coord_buckets[parent_dim][target_coord][bi];
+            
+            // Check if this basis element dominates the neighbor
             bool is_dominated = true;
             for (int j = 0; j < ss_dim; ++j) {
-                if (neighbor[j] > m_safe_set_basis[i * ss_dim + j]) {
+                if (neighbor[j] > m_safe_set_basis[basis_idx * ss_dim + j]) {
                     is_dominated = false;
                     break;
                 }
@@ -472,15 +485,49 @@ int pfacesKernel_mono_synth::updateSafeSet(int* unsafe_flags) {
         
         if (!dominated) {
             if (m_safe_set_size >= MAX_BASIS_ELEMENTS) break;
+            
+            // Add to basis
             for (int j = 0; j < ss_dim; ++j) {
                 m_safe_set_basis[m_safe_set_size * ss_dim + j] = neighbor[j];
             }
-            m_safe_set_flat_indices[m_safe_set_size] = flat_idx;
+            m_safe_set_flat_indices[m_safe_set_size] = flattenIndex(neighbor);
+            
+            // Add to coordinate index
+            for (int j = 0; j < ss_dim; ++j) {
+                const int coord = neighbor[j];
+                if (coord < MAX_COORD_VALUE) {
+                    int& bs = m_bucket_sizes[j][coord];
+                    if (bs < MAX_BUCKET_SIZE) {
+                        m_coord_buckets[j][coord][bs++] = m_safe_set_size;
+                    }
+                }
+            }
+            
             m_safe_set_size++;
             added++;
         }
     }
     return added;
+}
+
+void pfacesKernel_mono_synth::rebuildCoordIndex() {
+    const int ss_dim = m_ss_dim;
+    
+    // Clear all bucket sizes
+    std::memset(m_bucket_sizes, 0, sizeof(m_bucket_sizes));
+    
+    // Populate index from current basis
+    for (int i = 0; i < m_safe_set_size; ++i) {
+        for (int j = 0; j < ss_dim; ++j) {
+            const int coord = m_safe_set_basis[i * ss_dim + j];
+            if (coord < MAX_COORD_VALUE) {
+                int& bs = m_bucket_sizes[j][coord];
+                if (bs < MAX_BUCKET_SIZE) {
+                    m_coord_buckets[j][coord][bs++] = i;
+                }
+            }
+        }
+    }
 }
 
 /* not providing implementation of the virtual method: configureTuneParallelProgram*/

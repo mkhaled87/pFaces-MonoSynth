@@ -116,10 +116,14 @@ public:
   /* internal helper for safe set */
   int flattenIndex(const int* idx) const;
   int updateSafeSet(int* unsafe_flags);
+  void rebuildCoordIndex();
 
   /* safe set state - fixed-size for zero allocation overhead */
   static constexpr int MAX_BASIS_ELEMENTS = 2000;
   static constexpr int MAX_STATE_DIM = 3;
+  static constexpr int MAX_COORD_VALUE = 512;  // Max grid cells per dimension
+  static constexpr int MAX_BUCKET_SIZE = 64;   // Max elements with same coordinate
+  
   int m_safe_set_basis[MAX_BASIS_ELEMENTS * MAX_STATE_DIM];
   int m_safe_set_flat_indices[MAX_BASIS_ELEMENTS];
   int m_safe_set_size = 0;
@@ -127,10 +131,17 @@ public:
   int m_ss_dim = 2;
   std::chrono::high_resolution_clock::time_point m_compute_start;
   
+  /* coordinate index for O(1) redundancy lookup */
+  // coord_buckets[dim][coord_value] = list of basis indices with that coordinate
+  int m_coord_buckets[MAX_STATE_DIM][MAX_COORD_VALUE][MAX_BUCKET_SIZE];
+  int m_bucket_sizes[MAX_STATE_DIM][MAX_COORD_VALUE];
+  
   /* persistent work buffers - reused across iterations */
   unsigned char m_unsafe_mask[MAX_BASIS_ELEMENTS];
-  unsigned char* m_seen_neighbors = nullptr;  // Allocated once based on total_states
+  unsigned char* m_seen_neighbors = nullptr;
   int m_neighbor_buffer[MAX_BASIS_ELEMENTS * MAX_STATE_DIM * MAX_STATE_DIM];
+  int m_neighbor_parent_dim[MAX_BASIS_ELEMENTS * MAX_STATE_DIM]; // Which dimension was decremented
+  int m_neighbor_parent_coord[MAX_BASIS_ELEMENTS * MAX_STATE_DIM]; // Original coord before decrement
   
   /* benchmark results */
   int m_benchmark_count = 10;
