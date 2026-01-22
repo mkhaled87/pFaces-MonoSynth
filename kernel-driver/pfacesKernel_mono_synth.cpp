@@ -156,6 +156,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	size_t beVerboseLevel = parallelProgram.m_beVerboseLevel;
 
 	// Distribute jobs
+    // TODO: Replace OpenCL with pFaces API
 	cl::NDRange ndrPrecompute{x_flat_width, 1, 1}, ndrCheckSafety{2000, 1, 1}, ndrOffset{0, 0, 0};
 	job_execPrecomputeTransition = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_IDX, ndrPrecompute, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
     job_execCheckBasisSafety = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_IDX, ndrCheckSafety, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
@@ -167,6 +168,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	std::vector<std::pair<char*, size_t>> dataPool;
 	pFacesMemoryAllocationReport memReport = allocateMemory(dataPool, parallelProgram.getMachine(), parallelProgram.getTargetDevicesIndicies(), 1, false);
     if (beVerboseLevel >= 2) memReport.PrintReport();
+    // TODO: Replace OpenCL with pFaces API
 	const cl::Device& dataAccessDevice = parallelProgram.getTargetDevices()[0];
 
 	// IO jobs
@@ -333,7 +335,9 @@ size_t pfacesKernel_mono_synth::prepareSafeSetIteration(void* pPackedKernel, voi
     *pBasisListSize = pKernel->m_safe_set_size;
 
     // Update ND-Range
-    cl::NDRange ndRange((size_t)((pKernel->m_safe_set_size + 127) / 128) * 128, 1, 1);
+
+    //TODO: Replace OPENCL with PFACES API
+    cl::NDRange ndRange(pKernel->m_safe_set_size, 1, 1);
     for (auto& job : pKernel->job_execCheckBasisSafety) {
         job->getTasks()[0]->setNdRangeGlobal(ndRange);
     }
