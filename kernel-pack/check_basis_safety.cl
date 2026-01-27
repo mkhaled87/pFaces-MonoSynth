@@ -1,12 +1,6 @@
-// OpenCL kernel for checking basis safety directly over the basis list
-
-#ifndef SS_DIM
-#define SS_DIM 3
-#endif
-
-#ifndef TOTAL_STATES
-#define TOTAL_STATES 1
-#endif
+// Safety Check Kernel - Monotone Synthesis
+// Checks if each basis element remains safe after one transition.
+// Requires: SS_DIM (state dimension), TOTAL_STATES (grid size)
 
 kernel void check_basis_safety(
     __global const int* basis_flat_idx,        // Flattened indices of basis elements
@@ -19,22 +13,27 @@ kernel void check_basis_safety(
     const int basis_list_size = basis_list_size_ptr[0];
     if (basis_idx >= basis_list_size) return;
 
+    // Get flat index and validate
     const int flat_idx = basis_flat_idx[basis_idx];
     if (flat_idx < 0 || flat_idx >= TOTAL_STATES) {
         unsafe_flags[basis_idx] = 1;
         return;
     }
 
+    // Look up next state from transition table
     int next_state[SS_DIM];
     for (int i = 0; i < SS_DIM; ++i) {
         next_state[i] = next_state_table[flat_idx * SS_DIM + i];
     }
 
+    // Check if next state is out-of-bounds (-1 signals OOB)
     if (next_state[0] == -1) {
         unsafe_flags[basis_idx] = 1;
         return;
     }
 
+    // Check if next state is dominated by ANY current basis element
+    // Dominated means basis[i][j] <= next_state[j] for all j
     int unsafe = 1;
     for (int i = 0; i < basis_list_size; ++i) {
         int dominated = 1;

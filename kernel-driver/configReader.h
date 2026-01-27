@@ -30,6 +30,7 @@ class configReader {
 
 	// general
 	std::string	m_validatemsg;
+	std::string m_config_file_dir;
 
 	bool m_isSynthesisPackSizeExactorPerc;
 	size_t m_syntheisPackSize;
@@ -52,6 +53,10 @@ class configReader {
 
 	// state/input spaces
 	float 		m_samplingperiod;
+	size_t		m_ode_steps;
+	std::string m_user_dynamics_file;
+	std::string m_state_priorities;
+	std::vector<int> vSsPriorities;
 
 	size_t 		m_statedim;
 	std::string m_stateeta;
@@ -63,6 +68,9 @@ class configReader {
 	std::vector<concrete_t>		vSsLb;
 	std::vector<concrete_t>		vSsUb;
 	std::vector<concrete_t>		vSsErr;
+	
+	// disturbances
+	size_t		m_disturbdim;
 
 
 	size_t 			m_inputdim;
@@ -75,6 +83,9 @@ class configReader {
 	std::vector<concrete_t>		vIsLb;
 	std::vector<concrete_t>		vIsUb;
 	std::vector<concrete_t>		vIsErr;
+	
+	// array limits
+	size_t		m_max_basis_elements;
 
 	// post / growth
 	bool m_postisode;
@@ -110,6 +121,9 @@ public:
 	inline const char* getDataImplementationtype()	const { return m_data.c_str(); }
 
 	inline float getSamplingPeriod() const { return m_samplingperiod; }
+	inline size_t getOdeSteps() const { return m_ode_steps; }
+	inline const char* getUserDynamicsFile() const { return m_user_dynamics_file.c_str(); }
+	inline std::vector<int> getSsPriorities() const { return vSsPriorities; }
 
 	inline size_t getSsDim() const { return m_statedim; }
 	inline std::vector<concrete_t> getSsEta() const { return vSsEta; }
@@ -124,6 +138,10 @@ public:
 	inline std::vector<concrete_t> getIsLb()  const { return vIsLb; }
 	inline std::vector<concrete_t> getIsUb()  const { return vIsUb; }
 	inline std::vector<concrete_t> getIsErr() const { return vIsErr; }
+	
+	inline size_t getDisturbDim() const { return m_disturbdim; }
+	
+	inline size_t getMaxBasisElements() const { return m_max_basis_elements; }
 
 	/* for sparse-aware kernels */
 	std::vector<std::vector<bool>> perComponentAffectingX;

@@ -42,13 +42,6 @@ namespace mono_synth {
 /**********************************************************/
 class pfacesKernel_mono_synth : public pfaces2DKernel {
 private:
-  const char* param_ss_dim = "@@SS_DIM@@";
-  const char* param_is_dim = "@@IS_DIM@@";
-  const char* param_ss_eta = "@@SS_ETA@@";
-  const char* param_ss_lb = "@@SS_LB@@";
-  const char* param_ss_ub = "@@SS_UB@@";
-  const char* param_tau = "@@SAMPLING_PERIOD@@";
-  const char* param_extra_include = "@@EXTRA_INCLUDE@@";
   const char*  cache_file = "transition_cache.bin";
 
 
@@ -94,7 +87,34 @@ public:
   pfacesKernel_mono_synth(const std::shared_ptr<pfacesKernelLaunchState>& spLaunchState, const std::shared_ptr<pfacesConfigurationReader>& spCfg);
 
   /* destructor */
-  ~pfacesKernel_mono_synth() = default;
+  ~pfacesKernel_mono_synth() {
+    delete[] m_safe_set_basis;
+    delete[] m_safe_set_flat_indices;
+    delete[] m_unsafe_mask;
+    delete[] m_seen_neighbors;
+    delete[] m_neighbor_buffer;
+    delete[] m_neighbor_parent_dim;
+    delete[] m_neighbor_parent_coord;
+    
+    if (m_coord_buckets) {
+      for (int i = 0; i < MAX_STATE_DIM; ++i) {
+        if (m_coord_buckets[i]) {
+          for (int j = 0; j < MAX_COORD_VALUE; ++j) {
+            delete[] m_coord_buckets[i][j];
+          }
+          delete[] m_coord_buckets[i];
+        }
+      }
+      delete[] m_coord_buckets;
+    }
+    
+    if (m_bucket_sizes) {
+      for (int i = 0; i < MAX_STATE_DIM; ++i) {
+        delete[] m_bucket_sizes[i];
+      }
+      delete[] m_bucket_sizes;
+    }
+  }
 
   /* pFaces program configuration */
   void configureParallelProgram(pfacesParallelProgram& parallelProgram);
@@ -118,30 +138,29 @@ public:
   int updateSafeSet(int* unsafe_flags);
   void rebuildCoordIndex();
 
-  /* safe set state - fixed-size for zero allocation overhead */
-  static constexpr int MAX_BASIS_ELEMENTS = 2000;
-  static constexpr int MAX_STATE_DIM = 3;
-  static constexpr int MAX_COORD_VALUE = 512;  // Max grid cells per dimension
-  static constexpr int MAX_BUCKET_SIZE = 64;   // Max elements with same coordinate
+  /* safe set state - will be initialized from config */
+  int MAX_BASIS_ELEMENTS;
+  int MAX_STATE_DIM;
+  int MAX_COORD_VALUE;
+  int MAX_BUCKET_SIZE;
   
-  int m_safe_set_basis[MAX_BASIS_ELEMENTS * MAX_STATE_DIM];
-  int m_safe_set_flat_indices[MAX_BASIS_ELEMENTS];
+  int* m_safe_set_basis = nullptr;
+  int* m_safe_set_flat_indices = nullptr;
   int m_safe_set_size = 0;
   int m_iterations = 0;
   int m_ss_dim = 2;
   std::chrono::high_resolution_clock::time_point m_compute_start;
   
   /* coordinate index for O(1) redundancy lookup */
-  // coord_buckets[dim][coord_value] = list of basis indices with that coordinate
-  int m_coord_buckets[MAX_STATE_DIM][MAX_COORD_VALUE][MAX_BUCKET_SIZE];
-  int m_bucket_sizes[MAX_STATE_DIM][MAX_COORD_VALUE];
+  int*** m_coord_buckets = nullptr;
+  int** m_bucket_sizes = nullptr;
   
   /* persistent work buffers - reused across iterations */
-  unsigned char m_unsafe_mask[MAX_BASIS_ELEMENTS];
+  unsigned char* m_unsafe_mask = nullptr;
   unsigned char* m_seen_neighbors = nullptr;
-  int m_neighbor_buffer[MAX_BASIS_ELEMENTS * MAX_STATE_DIM * MAX_STATE_DIM];
-  int m_neighbor_parent_dim[MAX_BASIS_ELEMENTS * MAX_STATE_DIM]; // Which dimension was decremented
-  int m_neighbor_parent_coord[MAX_BASIS_ELEMENTS * MAX_STATE_DIM]; // Original coord before decrement
+  int* m_neighbor_buffer = nullptr;
+  int* m_neighbor_parent_dim = nullptr;
+  int* m_neighbor_parent_coord = nullptr;
   
   /* benchmark results */
   int m_benchmark_count = 10;

@@ -1463,6 +1463,17 @@ const char** defaultConfiguration::getSchema(){
 configReader::configReader(const std::shared_ptr<pfacesConfigurationReader>& spConfigObject) {
 	m_spConfigObject = spConfigObject;
 	m_spConfigObject->parse(defaultConfiguration::getSchema(), defaultConfiguration::getDefaults());
+	
+	// Extract config file directory for relative path resolution
+	std::string config_path = m_spConfigObject->getConfigFilePath();
+	std::cout << "[MonoSynth] Config file path: " << config_path << std::endl;
+	size_t last_slash = config_path.find_last_of("/\\");
+	if (last_slash != std::string::npos) {
+		m_config_file_dir = config_path.substr(0, last_slash + 1);
+	} else {
+		m_config_file_dir = "./";
+	}
+	std::cout << "[MonoSynth] Config file dir: " << m_config_file_dir << std::endl;
 
 	load_values();
 	int validateResult = validate_values();
@@ -1622,6 +1633,50 @@ void configReader::load_values() {
 		m_inputerr = m_spConfigObject->readConfigValueString("inputs.err");
 
 		m_samplingperiod = m_spConfigObject->readConfigValueReal("samplingperiod");
+		
+		// Read new mono_synth specific parameters
+		try {
+			m_ode_steps = m_spConfigObject->readConfigValueInt("ode_steps");
+		} catch (...) {
+			m_ode_steps = 1000; // Default
+		}
+		
+		try {
+			m_user_dynamics_file = m_spConfigObject->readConfigValueString("user_dynamics_file");
+			std::cout << "[MonoSynth] Raw user dynamics file: " << m_user_dynamics_file << std::endl;
+			// Make path absolute if it's relative
+			if (!m_user_dynamics_file.empty() && m_user_dynamics_file[0] != '/') {
+				m_user_dynamics_file = m_config_file_dir + m_user_dynamics_file;
+			}
+			std::cout << "[MonoSynth] Resolved user dynamics file: " << m_user_dynamics_file << std::endl;
+		} catch (...) {
+			m_user_dynamics_file = "";
+		}
+		
+		try {
+			m_state_priorities = m_spConfigObject->readConfigValueString("states.priorities");
+			// Parse priorities manually (avoid template instantiation issues)
+			std::vector<concrete_t> temp = pfacesUtils::sStr2Vector<concrete_t>(m_state_priorities);
+			vSsPriorities.clear();
+			for (auto val : temp) {
+				vSsPriorities.push_back((int)val);
+			}
+		} catch (...) {
+			// Default: all min-priority (increasing)
+			vSsPriorities.resize(m_statedim, 1);
+		}
+		
+		try {
+			m_disturbdim = m_spConfigObject->readConfigValueInt("disturbances.dim");
+		} catch (...) {
+			m_disturbdim = 1; // Default
+		}
+		
+		try {
+			m_max_basis_elements = m_spConfigObject->readConfigValueInt("max_basis_elements");
+		} catch (...) {
+			m_max_basis_elements = 2000;
+		}
 
 		m_postisode = m_spConfigObject->readConfigValueBool("post.useode");
 		m_growthisode = m_spConfigObject->readConfigValueBool("growth.useode");
