@@ -644,7 +644,7 @@ defaultConfiguration::defaultConfiguration()
 	m_schema[635] = "safe.s9 = scope";
 	m_schema[636] = "safe.s9.h = string";
 	m_schema[637] = "safe.s9.type = string";
-	m_schema[638] = "samplingperiod = float";
+	m_schema[638] = "sampling_period = float";
 	m_schema[639] = "save_controller = boolean";
 	m_schema[640] = "save_transitions = boolean";
 	m_schema[641] = "states = scope";
@@ -861,7 +861,7 @@ defaultConfiguration::defaultConfiguration()
 	m_str << "\n";
 	m_str << "# Sampling period\n";
 	m_str << "# -------------------------\n";
-	m_str << "samplingperiod = \"0.0\";\n";
+	m_str << "sampling_period = \"0.0\";\n";
 	m_str << "\n";
 	m_str << "\n";
 	m_str << "# State/Input sets\n";
@@ -1492,94 +1492,6 @@ std::string	configReader::getExtraIncludeFile()const{
 	return  m_extraIncludeFile;
 }
 
-std::string configReader::getPostDynamicsInitCodeOpenCL() const {
-	std::stringstream ss("");
-	for (size_t i = 0; i < m_postDynamics_initCodes.size(); i++) {
-		ss << m_postDynamics_initCodes[i] << std::endl;
-	}
-	return ss.str();
-}
-
-std::string configReader::getPostDynamicsFinishCodeOpenCL() const {
-	std::stringstream ss("");
-	for (size_t i = 0; i < m_postDynamics_finishCodes.size(); i++) {
-		ss << m_postDynamics_finishCodes[i] << std::endl;
-	}
-	return ss.str();
-}
-
-std::string configReader::getGrowthDynamicsInitCodeOpenCL() const {
-	std::stringstream ss("");
-	for (size_t i = 0; i < m_growthDynamics_initCodes.size(); i++) {
-		ss << m_growthDynamics_initCodes[i] << std::endl;
-	}
-	return ss.str();
-}
-
-std::string configReader::getGrowthDynamicsFinishCodeOpenCL() const {
-	std::stringstream ss("");
-	for (size_t i = 0; i < m_growthDynamics_finishCodes.size(); i++) {
-		ss << m_growthDynamics_finishCodes[i] << std::endl;
-	}
-	return ss.str();
-}
-
-std::string configReader::getPostDynamicsElement(size_t elementIndex, bool isRawVersion) const {
-	std::stringstream ss("");
-
-	if (isRawVersion)
-		ss << postDynamics_raw[elementIndex];
-	else
-		ss << postDynamics[elementIndex];
-
-	return ss.str();
-}
-
-std::string configReader::getPostDynamicsOpenCL() const {
-	std::stringstream ss("");
-	for (size_t i = 0; i < postDynamics.size(); i++) {
-		ss << "xx[" << i << "] = ";
-		ss << getPostDynamicsElement(i) << ";" << std::endl;
-	}
-	return ss.str();
-}
-
-std::string configReader::getGrowthDynamicsOpenCL() const {
-	std::stringstream ss("");
-	for (size_t i = 0; i < growthDynamics.size(); i++) {
-		ss << "rr[" << i << "] = ";
-		ss << growthDynamics[i] << ";" << std::endl;
-	}
-	return ss.str();
-}
-
-size_t configReader::getMaxPosts() const {
-	return m_maxposts;
-}
-
-
-/* for sparse-aware kernels */
-std::vector<size_t>	configReader::getAffectingXComponents(size_t target_x_component) const {
-	std::vector<size_t> ret;
-	size_t ssDim = getSsDim();
-
-	for (size_t i = 0; i < ssDim; i++)
-		if (perComponentAffectingX[target_x_component][i])
-			ret.push_back(i);
-
-	return ret;
-}
-std::vector<size_t>	configReader::getAffectingUComponents(size_t target_x_component) const {
-	std::vector<size_t> ret;
-	size_t isDim = getIsDim();
-
-	for (size_t i = 0; i < isDim; i++)
-		if (perComponentAffectingU[target_x_component][i])
-			ret.push_back(i);
-
-	return ret;
-}
-
 void configReader::load_values() {
 	//--------
 		// Cache configuration variables in instance variables for 
@@ -1632,7 +1544,7 @@ void configReader::load_values() {
 		m_inputub = m_spConfigObject->readConfigValueString("inputs.ub");
 		m_inputerr = m_spConfigObject->readConfigValueString("inputs.err");
 
-		m_samplingperiod = m_spConfigObject->readConfigValueReal("samplingperiod");
+		m_sampling_period = m_spConfigObject->readConfigValueReal("sampling_period");
 		
 		// Read new mono_synth specific parameters
 		try {
@@ -1678,135 +1590,9 @@ void configReader::load_values() {
 			m_max_basis_elements = 2000;
 		}
 
-		m_postisode = m_spConfigObject->readConfigValueBool("post.useode");
-		m_growthisode = m_spConfigObject->readConfigValueBool("growth.useode");
-		m_maxposts = m_spConfigObject->readConfigValueInt("growth.maxposts");
-
-
 		// reading the extra include file
 		m_extraIncludeFile = m_spConfigObject->readConfigValueString("extra_include_file");
 
-		// reading code lines for post
-		m_postCodeonly = m_spConfigObject->readConfigValueBool("post.codeonly");
-		for (size_t i = 1; i <= MAX_INIT_CODE_LINES; i++) {
-			try {
-				std::string code_line = std::string("post.initcode_") + std::to_string(i);
-				std::string found = m_spConfigObject->readConfigValueString(code_line.c_str());
-
-				if (std::string("opencl-code") == found)
-					break;
-
-				m_postDynamics_initCodes.push_back(found);
-			}
-			catch (...) {
-				break;
-			}
-		}
-		for (size_t i = 1; i <= MAX_FINISH_CODE_LINES; i++) {
-			try {
-				std::string code_line = std::string("post.finishcode_") + std::to_string(i);
-				std::string found = m_spConfigObject->readConfigValueString(code_line.c_str());
-
-				if (std::string("opencl-code") == found)
-					break;
-
-				m_postDynamics_finishCodes.push_back(found);
-			}
-			catch (...) {
-				break;
-			}
-		}
-
-		// reading code lines for radius
-		m_growthCodeonly = m_spConfigObject->readConfigValueBool("growth.codeonly");
-		for (size_t i = 1; i <= MAX_INIT_CODE_LINES; i++) {
-			try {
-				std::string code_line = std::string("growth.initcode_") + std::to_string(i);
-				std::string found = m_spConfigObject->readConfigValueString(code_line.c_str());
-
-				if (std::string("opencl-code") == found)
-					break;
-
-				m_growthDynamics_initCodes.push_back(found);
-			}
-			catch (...) {
-				break;
-			}
-		}
-		for (size_t i = 1; i <= MAX_FINISH_CODE_LINES; i++) {
-			try {
-				std::string code_line = std::string("growth.finishcode_") + std::to_string(i);
-				std::string found = m_spConfigObject->readConfigValueString(code_line.c_str());
-
-				if (std::string("opencl-code") == found)
-					break;
-
-				m_growthDynamics_finishCodes.push_back(found);
-			}
-			catch (...) {
-				break;
-			}
-		}
-
-		// reading post/growth dynamics
-		if (m_statedim > 0) {
-			std::stringstream ss1, ss2;
-			for (int i = ((int)m_statedim) - 1; i >= 0; i--) {
-
-				std::vector<bool> affectingX(m_statedim, false);
-				std::vector<bool> affectingU(m_inputdim, false);
-
-				ss1.str("");
-				ss1 << "post.xx" << (i + 1);
-				std::string eqn1 = m_spConfigObject->readConfigValueString(ss1.str().c_str());
-				postDynamics_raw.insert(postDynamics_raw.begin(), eqn1);
-				if (eqn1 == "" || eqn1.empty() || eqn1 == std::string("EMPTY"))
-					missingPostDynamics.insert(missingPostDynamics.begin(), ss1.str());
-				else {
-					for (int j = ((int)m_statedim) - 1; j >= 0; j--) {
-						std::string stateFrom = "x" + std::to_string(j + 1);
-						std::string stateTo = "x[" + std::to_string(j) + "]";
-						eqn1 = pfacesUtils::strReplaceAll(eqn1, stateFrom, stateTo);
-
-						if (eqn1.find(stateTo) != std::string::npos) {
-							affectingX[j] = true;
-						}
-
-						std::string inputFrom = "u" + std::to_string(j + 1);
-						std::string inputTo = "u[" + std::to_string(j) + "]";
-						eqn1 = pfacesUtils::strReplaceAll(eqn1, inputFrom, inputTo);
-
-						if (eqn1.find(inputTo) != std::string::npos) {
-							affectingU[j] = true;
-						}
-					}
-
-					postDynamics.insert(postDynamics.begin(), eqn1);
-				}
-
-				perComponentAffectingX.insert(perComponentAffectingX.begin(), affectingX);
-				perComponentAffectingU.insert(perComponentAffectingU.begin(), affectingU);
-
-				ss2.str("");
-				ss2 << "growth.rr" << (i + 1);
-				std::string eqn2 = m_spConfigObject->readConfigValueString(ss2.str().c_str());
-				growthDynamics_raw.insert(growthDynamics_raw.begin(), eqn2);
-				if (eqn2 == "" || eqn2.empty() || eqn2 == std::string("EMPTY"))
-					missingGrowthDynamics.insert(missingGrowthDynamics.begin(), ss2.str());
-				else {
-					for (int j = ((int)m_statedim) - 1; j >= 0; j--) {
-						std::string radiusFrom = "r" + std::to_string(j + 1);
-						std::string radiusTo = "r[" + std::to_string(j) + "]";
-						eqn2 = pfacesUtils::strReplaceAll(eqn2, radiusFrom, radiusTo);
-
-						std::string inputFrom = "u" + std::to_string(j + 1);
-						std::string inputTo = "u[" + std::to_string(j) + "]";
-						eqn2 = pfacesUtils::strReplaceAll(eqn2, inputFrom, inputTo);
-					}
-					growthDynamics.insert(growthDynamics.begin(), eqn2);
-				}
-			}
-		}
 
 		// reading reach sets
 		try {
@@ -1900,8 +1686,8 @@ int configReader::validate_values() {
 	}
 
 	// sampling and ode usage validation
-	if ((m_postisode || m_growthisode) && (m_samplingperiod <= 0)) {
-		sserrors << "\t-Provide non-negative sampling period since you are using ODE." << std::endl;
+	if (m_sampling_period <= 0) {
+		sserrors << "\t-Please provide non-negative sampling period." << std::endl;
 		ret = VALIDATE_RESULT_FAILED;
 	}
 
@@ -1939,44 +1725,7 @@ int configReader::validate_values() {
 		}
 	}
 
-	// dimension of the ss wrt # of dynamics equations
-	if (m_statedim != postDynamics.size() && !m_postCodeonly) {
-		sserrors << "\t-Number of system-dynamics equations should be equal to its dimension." << std::endl;
-		ret = VALIDATE_RESULT_FAILED;
-	}
-
-	// dimension of the ss wrt # of growth equations
-	if (m_statedim != growthDynamics.size() && !m_growthCodeonly) {
-		sserrors << "\t-Number of growth-dynamics equations should be equal to its dimension." << std::endl;
-		ret = VALIDATE_RESULT_FAILED;
-	}
-
-	if (missingPostDynamics.size() != 0 && !m_postCodeonly) {
-		sserrors << "\t-You miss the following post dynamics: ";
-		for (size_t i = 0; i < missingPostDynamics.size(); i++)
-			sserrors << missingPostDynamics[i] << " ";
-		sserrors << std::endl;
-		ret = VALIDATE_RESULT_FAILED;
-	}
-
-	if (missingGrowthDynamics.size() != 0 && !m_growthCodeonly) {
-		sserrors << "\t-You miss the following growth dynamics: ";
-		for (size_t i = 0; i < missingGrowthDynamics.size(); i++)
-			sserrors << missingGrowthDynamics[i] << " ";
-		sserrors << std::endl;
-		ret = VALIDATE_RESULT_FAILED;
-	}
-
-
-	// Allowed values for MAX-POST-COUNT
-	std::vector<size_t> allowedMAxPosts = { 1, 2, 4, 8, 16, 32, 64, 128, 256 };
-	if (!pfacesUtils::isVectorElement(allowedMAxPosts, m_maxposts)) {
-		sserrors << "\t-The provided MAX-POSTS-COUNT is not compatible. please use one of the values: ";
-		pfacesUtils::PrintVector(allowedMAxPosts, ',', false, sserrors);
-		sserrors << std::endl;
-		ret = VALIDATE_RESULT_FAILED;
-	}
-
+	// Check final validation result and set message
 	if (ret == VALIDATE_RESULT_FAILED) {
 		m_validatemsg = (sserrors.str()).c_str();
 		return ret;

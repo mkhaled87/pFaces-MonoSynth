@@ -52,63 +52,47 @@ class configReader {
 	std::string		m_avoidData;
 
 	// state/input spaces
-	float 		m_samplingperiod;
-	size_t		m_ode_steps;
+	float m_sampling_period;
+	size_t m_ode_steps;
 	std::string m_user_dynamics_file;
 	std::string m_state_priorities;
 	std::vector<int> vSsPriorities;
 
-	size_t 		m_statedim;
+	// state space strings
+	size_t m_statedim;
 	std::string m_stateeta;
 	std::string m_statelb;
 	std::string m_stateub;
 	std::string m_stateerr;
 
-	std::vector<concrete_t>		vSsEta;
-	std::vector<concrete_t>		vSsLb;
-	std::vector<concrete_t>		vSsUb;
-	std::vector<concrete_t>		vSsErr;
+	// state space vectors
+	std::vector<concrete_t>	vSsEta;
+	std::vector<concrete_t>	vSsLb;
+	std::vector<concrete_t>	vSsUb;
+	std::vector<concrete_t>	vSsErr;
 	
 	// disturbances
 	size_t		m_disturbdim;
 
-
-	size_t 			m_inputdim;
+	// input space strings
+	size_t m_inputdim;
 	std::string m_inputeta;
 	std::string m_inputlb;
 	std::string m_inputub;
 	std::string m_inputerr;
 
-	std::vector<concrete_t>		vIsEta;
-	std::vector<concrete_t>		vIsLb;
-	std::vector<concrete_t>		vIsUb;
-	std::vector<concrete_t>		vIsErr;
+	// input space vectors
+	std::vector<concrete_t> vIsEta;
+	std::vector<concrete_t> vIsLb;
+	std::vector<concrete_t> vIsUb;
+	std::vector<concrete_t> vIsErr;
 	
 	// array limits
-	size_t		m_max_basis_elements;
+	size_t m_max_basis_elements;
 
-	// post / growth
-	bool m_postisode;
-	bool m_postCodeonly;
-	bool m_growthisode;
-	bool m_growthCodeonly;
-	size_t m_maxposts;
-
+	// extra include file
 	std::string m_extraIncludeFile;
 
-	std::vector<std::string> m_postDynamics_initCodes;
-	std::vector<std::string> m_postDynamics_finishCodes;
-	std::vector<std::string> m_growthDynamics_initCodes;
-	std::vector<std::string> m_growthDynamics_finishCodes;
-
-	std::vector<std::string> postDynamics_raw;
-	std::vector<std::string> postDynamics;
-
-	std::vector<std::string> growthDynamics_raw;
-	std::vector<std::string> growthDynamics;
-
-	std::vector<std::string> missingPostDynamics;
-	std::vector<std::string> missingGrowthDynamics;
 public:
 	configReader(const std::shared_ptr<pfacesConfigurationReader>& spConfigObject);
 
@@ -120,7 +104,7 @@ public:
 
 	inline const char* getDataImplementationtype()	const { return m_data.c_str(); }
 
-	inline float getSamplingPeriod() const { return m_samplingperiod; }
+	inline float getSamplingPeriod() const { return m_sampling_period; }
 	inline size_t getOdeSteps() const { return m_ode_steps; }
 	inline const char* getUserDynamicsFile() const { return m_user_dynamics_file.c_str(); }
 	inline std::vector<int> getSsPriorities() const { return vSsPriorities; }
@@ -167,23 +151,7 @@ public:
 			return (size_t)std::ceil(((double)m_syntheisPackSize) / 100.0 * (double)diameter);
 	}
 
-	inline bool getUseOdePost() const { return m_postisode; }
-	inline bool getCodeOnlyPost() const { return m_postCodeonly; }
-	inline bool getUseOdeRadius() const { return m_growthisode; }
-	inline bool getCodeOnlyRadius() const { return m_growthCodeonly; }
-
 	std::string	getExtraIncludeFile()const;
-
-	std::string	getPostDynamicsInitCodeOpenCL()const;
-	std::string	getPostDynamicsFinishCodeOpenCL()const;
-	std::string	getGrowthDynamicsInitCodeOpenCL()const;
-	std::string	getGrowthDynamicsFinishCodeOpenCL()const;
-
-	std::string	getPostDynamicsElement(size_t elementIndex, bool isRawVersion = false)const;
-	std::string getPostDynamicsOpenCL()const;
-	std::string getGrowthDynamicsOpenCL()const;
-
-	size_t getMaxPosts() const;
 
 	inline bool isSaveTransitions() const { return m_save_transitions; }
 	inline bool isSaveController() const { return m_save_controller; }

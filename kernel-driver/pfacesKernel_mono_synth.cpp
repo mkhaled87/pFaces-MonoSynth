@@ -15,7 +15,7 @@
 #include <algorithm>
 
 #include "pfacesKernel_mono_synth.h"
-#include <filesystem>
+
 namespace mono_synth {
 
 
@@ -26,7 +26,6 @@ size_t pfacesKernel_mono_synth::saveTransitionTable(void* pPackedKernel, void* p
 	const static pfacesParallelProgram*  pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
 	const char* pDataTransitionTable = pParallelProgram->m_dataPool[0].first;
 	int ss_dim = ((pfacesKernel_mono_synth*)(pPackedKernel))->m_spCfg->getSsDim();
-	// int number_of_states = number_of_elements/ss_dim;
 	int number_of_states = ((pfacesKernel_mono_synth*)(pPackedKernel))->x_flat_width;
 	int number_of_elements = number_of_states*ss_dim;
 
@@ -49,19 +48,13 @@ size_t pfacesKernel_mono_synth::loadTransitionTable(void* pPackedKernel, void* p
 	// retrieving the required values
 	const static pfacesParallelProgram*  pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
 	char* pDataTransitionTable = pParallelProgram->m_dataPool[0].first;
-	// auto transition_table_size = pParallelProgram->m_dataPool[0].second;
 
-	// save to file
+	// load from file
 	const char* file_path = ((pfacesKernel_mono_synth*)(pPackedKernel))->cache_file;
-	// int number_of_elements = transition_table_size/sizeof(cl_int);
 	int ss_dim = ((pfacesKernel_mono_synth*)(pPackedKernel))->m_spCfg->getSsDim();
-	// int number_of_states = number_of_elements/ss_dim;
 	int number_of_states = ((pfacesKernel_mono_synth*)(pPackedKernel))->x_flat_width;
 	int number_of_elements = number_of_states*ss_dim;
-
-	// load
 	std::ifstream cache_in(file_path, std::ios::binary);
-        
 	if (cache_in.good()) {
 		int cached_total_states;
 		cache_in.read(reinterpret_cast<char*>(&cached_total_states), sizeof(int));
@@ -74,6 +67,7 @@ size_t pfacesKernel_mono_synth::loadTransitionTable(void* pPackedKernel, void* p
 	return 0;
 }
 
+/* getting the parameter list for the kernel */
 std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_synth::getParameterList() {
 	
 	std::vector<std::string> params;
