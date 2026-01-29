@@ -1,3 +1,12 @@
+/*
+* precompute_transitions.cl
+*
+*  date    : 20.01.2026
+*  about   : Soon.
+* ***********************************************************************
+*/
+
+
 /**
  * Generic N-Dimensional Worst-Case Transition Kernel (pFaces)
  * 

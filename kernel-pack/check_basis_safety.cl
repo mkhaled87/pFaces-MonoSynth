@@ -1,3 +1,11 @@
+/*
+* check_basis_safety.cl
+*
+*  date    : 20.01.2026
+*  about   : Soon.
+* ***********************************************************************
+*/
+
 // Safety Check Kernel - Monotone Synthesis
 // Checks if each basis element remains safe after one transition.
 // Requires: SS_DIM (state dimension), TOTAL_STATES (grid size)
