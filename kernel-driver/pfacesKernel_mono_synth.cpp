@@ -133,27 +133,18 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	MAX_COORD_VALUE += 1;
 	
 	// NOW allocate dynamic arrays (after MAX_COORD_VALUE is known)
-	m_safe_set_basis = new int[MAX_BASIS_ELEMENTS * MAX_STATE_DIM]();
-	m_safe_set_flat_indices = new int[MAX_BASIS_ELEMENTS]();
-	m_unsafe_mask = new unsigned char[MAX_BASIS_ELEMENTS]();
-	m_neighbor_buffer = new int[MAX_BASIS_ELEMENTS * MAX_STATE_DIM * MAX_STATE_DIM]();
-	m_neighbor_parent_dim = new int[MAX_BASIS_ELEMENTS * MAX_STATE_DIM]();
-	m_neighbor_parent_coord = new int[MAX_BASIS_ELEMENTS * MAX_STATE_DIM]();
+    m_safe_set_basis = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM, 0);
+	m_safe_set_flat_indices = std::vector<int>(MAX_BASIS_ELEMENTS, 0);
+    m_unsafe_mask = std::vector<unsigned char>(MAX_BASIS_ELEMENTS, 0);
+	m_neighbor_buffer = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM * MAX_STATE_DIM, 0);
+	m_neighbor_parent_dim = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM, 0);
+	m_neighbor_parent_coord = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM, 0);
 	
 	// Allocate 3D array for coord_buckets
-	m_coord_buckets = new int**[MAX_STATE_DIM];
-	for (int i = 0; i < MAX_STATE_DIM; ++i) {
-		m_coord_buckets[i] = new int*[MAX_COORD_VALUE];
-		for (int j = 0; j < MAX_COORD_VALUE; ++j) {
-			m_coord_buckets[i][j] = new int[MAX_BUCKET_SIZE]();
-		}
-	}
+	m_coord_buckets = std::vector<std::vector<std::vector<int>>>(MAX_STATE_DIM, std::vector<std::vector<int>>(MAX_COORD_VALUE, std::vector<int>(MAX_BUCKET_SIZE, 0)));
 	
 	// Allocate 2D array for bucket_sizes
-	m_bucket_sizes = new int*[MAX_STATE_DIM];
-	for (int i = 0; i < MAX_STATE_DIM; ++i) {
-		m_bucket_sizes[i] = new int[MAX_COORD_VALUE]();
-	}
+	m_bucket_sizes = std::vector<std::vector<int>>(MAX_STATE_DIM, std::vector<int>(MAX_COORD_VALUE, 0));
 
 	// Loading the memory fingerprint of the abstract functions from .mem files
 	std::string precomputeMem = packPath + "precompute_transitions.mem";
@@ -189,7 +180,6 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	size_t beVerboseLevel = parallelProgram.m_beVerboseLevel;
 
 	// Distribute jobs
-    // TODO: Replace OpenCL with pFaces API
 	cl::NDRange ndrPrecompute{x_flat_width, 1, 1}, ndrCheckSafety{(size_t)MAX_BASIS_ELEMENTS, 1, 1}, ndrOffset{0, 0, 0};
 	job_execPrecomputeTransition = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_IDX, ndrPrecompute, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
     job_execCheckBasisSafety = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_IDX, ndrCheckSafety, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
@@ -201,10 +191,9 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	std::vector<std::pair<char*, size_t>> dataPool;
 	pFacesMemoryAllocationReport memReport = allocateMemory(dataPool, parallelProgram.getMachine(), parallelProgram.getTargetDevicesIndicies(), 1, false);
     if (beVerboseLevel >= 2) memReport.PrintReport();
-    // TODO: Replace OpenCL with pFaces API
-	const cl::Device& dataAccessDevice = parallelProgram.getTargetDevices()[0];
 
 	// IO jobs
+    const cl::Device& dataAccessDevice = parallelProgram.getTargetDevices()[0];
     job_readNextStateTable = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, 0, 1, 0);
     job_writeNextStateTable = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 0, 1, 0);
     job_readUnsafeFlags = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, 1, 5, 4);
@@ -380,17 +369,20 @@ size_t pfacesKernel_mono_synth::initSafeSet(void* pPackedKernel, void* pPackedPa
     pKernel->m_ss_dim = pKernel->m_spCfg->getSsDim();
     
     // Allocate seen_neighbors once (persists across benchmark runs)
-    if (!pKernel->m_seen_neighbors) {
-        pKernel->m_seen_neighbors = new unsigned char[pKernel->x_flat_width];
+    if (!pKernel->m_seen_neighbors.empty()) {
+        pKernel->m_seen_neighbors = std::vector<unsigned char>();
+    }
+    if(pKernel->x_flat_width > pKernel->m_seen_neighbors.size()){
+        pKernel->m_seen_neighbors.resize(pKernel->x_flat_width);
     }
     
     // Zero the arrays
-    std::memset(pKernel->m_safe_set_basis, 0, pKernel->MAX_BASIS_ELEMENTS * pKernel->MAX_STATE_DIM * sizeof(int));
-    std::memset(pKernel->m_safe_set_flat_indices, 0, pKernel->MAX_BASIS_ELEMENTS * sizeof(int));
+    std::memset(pKernel->m_safe_set_basis.data(), 0, pKernel->MAX_BASIS_ELEMENTS * pKernel->MAX_STATE_DIM * sizeof(int));
+    std::memset(pKernel->m_safe_set_flat_indices.data(), 0, pKernel->MAX_BASIS_ELEMENTS * sizeof(int));
     
     // Clear coordinate buckets (prevents stale indices from previous runs)
     for (int i = 0; i < pKernel->MAX_STATE_DIM; ++i) {
-        std::memset(pKernel->m_bucket_sizes[i], 0, pKernel->MAX_COORD_VALUE * sizeof(int));
+        std::memset(pKernel->m_bucket_sizes[i].data(), 0, pKernel->MAX_COORD_VALUE * sizeof(int));
     }
     
     // Initialize to corner of the box
@@ -398,7 +390,7 @@ size_t pfacesKernel_mono_synth::initSafeSet(void* pPackedKernel, void* pPackedPa
         pKernel->m_safe_set_basis[i] = (int)pKernel->X_widthPerDimension[i];
     }
     pKernel->m_safe_set_size = 1;
-    pKernel->m_safe_set_flat_indices[0] = pKernel->flattenIndex(pKernel->m_safe_set_basis);
+    pKernel->m_safe_set_flat_indices[0] = pKernel->flattenIndex(pKernel->m_safe_set_basis.data());
     
     pKernel->m_iterations = 0;
     pKernel->m_compute_start = std::chrono::high_resolution_clock::now();
@@ -417,14 +409,13 @@ size_t pfacesKernel_mono_synth::prepareSafeSetIteration(void* pPackedKernel, voi
     int* pBasisFlatIdx = (int*)pParallelProgram->m_dataPool[1].first;
     int* pBasisList = (int*)pParallelProgram->m_dataPool[2].first;
     int* pBasisListSize = (int*)pParallelProgram->m_dataPool[3].first;
-    
-    std::memcpy(pBasisFlatIdx, pKernel->m_safe_set_flat_indices, pKernel->m_safe_set_size * sizeof(int));
-    std::memcpy(pBasisList, pKernel->m_safe_set_basis, pKernel->m_safe_set_size * ss_dim * sizeof(int));
+
+    /// TODO: why not use pBasisFlatIdx + pBasisList directly in the serial part (updateSafeSet) instead of copying back and forth?
+    std::memcpy(pBasisFlatIdx, pKernel->m_safe_set_flat_indices.data(), pKernel->m_safe_set_size * sizeof(int));
+    std::memcpy(pBasisList, pKernel->m_safe_set_basis.data(), pKernel->m_safe_set_size * ss_dim * sizeof(int));
     *pBasisListSize = pKernel->m_safe_set_size;
 
     // Update ND-Range
-
-    //TODO: Replace OPENCL with PFACES API
     cl::NDRange ndRange(pKernel->m_safe_set_size, 1, 1);
     for (auto& job : pKernel->job_execCheckBasisSafety) {
         job->getTasks()[0]->setNdRangeGlobal(ndRange);
@@ -495,8 +486,8 @@ int pfacesKernel_mono_synth::updateSafeSet(int* unsafe_flags) {
     const int total_states = x_flat_width;
     
     // Clear persistent buffers
-    std::memset(m_unsafe_mask, 0, m_safe_set_size * sizeof(unsigned char));
-    std::memset(m_seen_neighbors, 0, total_states * sizeof(unsigned char));
+    std::memset(m_unsafe_mask.data(), 0, m_safe_set_size * sizeof(unsigned char));
+    std::memset(m_seen_neighbors.data(), 0, total_states * sizeof(unsigned char));
 
     // Pass 1: Find unsafe elements and generate unique neighbors
     // Store which dimension was decremented for each neighbor (for indexed redundancy check)
@@ -607,7 +598,7 @@ void pfacesKernel_mono_synth::rebuildCoordIndex() {
     
     // Clear all bucket sizes
     for (int i = 0; i < MAX_STATE_DIM; ++i) {
-        std::memset(m_bucket_sizes[i], 0, MAX_COORD_VALUE * sizeof(int));
+        std::memset(m_bucket_sizes[i].data(), 0, MAX_COORD_VALUE * sizeof(int));
     }
     
     // Populate index from current basis
