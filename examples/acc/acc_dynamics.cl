@@ -48,12 +48,12 @@ inline void get_worst_case_inputs(const float* x, float* u, float* w) {
  * Uses interval arithmetic for uncertain parameters (M, R_w, alpha, beta, gamma)
  */
 inline float compute_vehicle_accel(float v, float T, bool is_lead) {
-    float R_w = (T > 0.0f) ? (is_lead ? R_W_MAX : R_W_MIN) : (is_lead ? R_W_MIN : R_W_MAX);
-    float M = ((T / R_w - (is_lead ? ALPHA_MAX : ALPHA_MIN)) > 0.0f) ? 
+    const float R_w = (T > 0.0f) ? (is_lead ? R_W_MAX : R_W_MIN) : (is_lead ? R_W_MIN : R_W_MAX);
+    const float M = ((T / R_w - (is_lead ? ALPHA_MAX : ALPHA_MIN)) > 0.0f) ? 
                (is_lead ? M_MAX : M_MIN) : (is_lead ? M_MIN : M_MAX);
-    float a = (1.0f / M) * (T / R_w - (is_lead ? ALPHA_MAX : ALPHA_MIN));
-    float b = -(1.0f / (is_lead ? M_MIN : M_MAX)) * (is_lead ? BETA_MAX : BETA_MIN);
-    float c = -(1.0f / (is_lead ? M_MIN : M_MAX)) * (is_lead ? GAMMA_MAX : GAMMA_MIN);
+    const float a = (1.0f / M) * (T / R_w - (is_lead ? ALPHA_MAX : ALPHA_MIN));
+    const float b = -(1.0f / (is_lead ? M_MIN : M_MAX)) * (is_lead ? BETA_MAX : BETA_MIN);
+    const float c = -(1.0f / (is_lead ? M_MIN : M_MAX)) * (is_lead ? GAMMA_MAX : GAMMA_MIN);
     
     float dvdt = a + b * v + c * v * v;
     if (v <= 0.0f && dvdt < 0.0f) dvdt = 0.0f;
@@ -66,8 +66,8 @@ inline float compute_vehicle_accel(float v, float T, bool is_lead) {
  * State: [headway, ego_velocity, lead_velocity]
  */
 inline void ode_rhs(const float* x, const float* u, const float* w, float* dxdt) {
-    float a_ego = compute_vehicle_accel(x[1], u[0], false);
-    float a_lead = compute_vehicle_accel(x[2], w[0], true);
+    const float a_ego = compute_vehicle_accel(x[1], u[0], false);
+    const float a_lead = compute_vehicle_accel(x[2], w[0], true);
     
     dxdt[0] = x[2] - x[1];  // dh/dt = v_lead - v_ego
     dxdt[1] = a_ego;         // dv_ego/dt
