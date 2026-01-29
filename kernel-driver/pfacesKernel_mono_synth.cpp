@@ -114,8 +114,8 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	MAX_BUCKET_SIZE = std::max(64, MAX_BASIS_ELEMENTS / 5);
 	
 	// setting the dimensions of the base 2d kernel object
-	size_t ssDim = m_spCfg->getSsDim();
-	size_t isDim = m_spCfg->getIsDim();
+	const size_t ssDim = m_spCfg->getSsDim();
+	const size_t isDim = m_spCfg->getIsDim();
 
 	// Convert concrete space into flat space for X
 	// MUST DO THIS FIRST to get X_widthPerDimension for MAX_COORD_VALUE calculation
@@ -132,7 +132,7 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	// Add small buffer for safety
 	MAX_COORD_VALUE += 1;
 	
-	// NOW allocate dynamic arrays (after MAX_COORD_VALUE is known)
+	// Allocate dynamic arrays (after MAX_COORD_VALUE is known)
     m_safe_set_basis = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM, 0);
 	m_safe_set_flat_indices = std::vector<int>(MAX_BASIS_ELEMENTS, 0);
     m_unsafe_mask = std::vector<unsigned char>(MAX_BASIS_ELEMENTS, 0);
@@ -193,6 +193,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     if (beVerboseLevel >= 2) memReport.PrintReport();
 
 	// IO jobs
+    ///TODO: Use the #defines in the .h file instead of tbe hard-coded numbers below
     const cl::Device& dataAccessDevice = parallelProgram.getTargetDevices()[0];
     job_readNextStateTable = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, 0, 1, 0);
     job_writeNextStateTable = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 0, 1, 0);
@@ -212,7 +213,8 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     instr_logOff->setAsLogOff();
     instr_logOn->setAsLogOn();
 
-	// Cache check
+	// Check if cache file is available and compatible cache
+    /// TODO: this will be problematic if we have two examples with same state space size but different dynamics loading from the same file! Maybe use project_name as part of the cache file name?
 	bool useCache = false;
 	std::ifstream cache_check(cache_file, std::ios::binary);
 	if (cache_check.good()) {
@@ -240,6 +242,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	}
 
     // Benchmark initialization
+    /// TODO: Will all users need benchmarking? Make this optional with some if statement and a parameter coming from outside?
     instructionList.push_back(std::make_shared<pfacesInstruction>());
     instructionList.back()->setAsBlockingSyncPoint();
     
@@ -285,6 +288,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     instructionList.push_back(instr_jumpToSafeSetStart);
 
     // Benchmark next run
+    ///TODO: same comment on benchmarking as above applies
     instructionList.push_back(std::make_shared<pfacesInstruction>());
     instructionList.back()->setAsBlockingSyncPoint();
 
@@ -304,6 +308,8 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	parallelProgram.m_Universal_offsetNDRange = parallelProgram.m_Process_offsetNDRange = ndrOffset;
     
     // Standard pFaces defines
+    ///TODO: It might be better to pass these params along with the params of the kernel (those with @@xxx@@) so that they can be more easily accessed/modified from the kernels, 
+    // and also to make the code cleaner + more readable in the kernel side. But this is up to you.
     parallelProgram.m_compilerDefinesList.push_back({"SS_DIM", std::to_string(m_spCfg->getSsDim())});
     parallelProgram.m_compilerDefinesList.push_back({"TOTAL_STATES", std::to_string(x_flat_width)});
     
@@ -322,6 +328,9 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     auto eta = m_spCfg->getSsEta();
     auto pri = m_spCfg->getSsPriorities();
     
+
+    /// TODO: here it becomes more interesting. These params will be passed to the compilers in the form -DX=Y, and some compilers may fail to interpret them because of the commas. 
+    // I bet MSVC++ will have problems with this. I'd then highly advise to move to the approach of passing these arrays as kernel arguments instead.
     std::stringstream ss_lb, ss_ub, ss_res, ss_pri;
     ss_lb << std::fixed << std::setprecision(6);
     ss_ub << std::fixed << std::setprecision(6);
@@ -361,7 +370,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 }
 
 /* Safe Set Host Functions */
-
+///TODO: some functions below are host-side functions. What about moving them above in the file with other host-side functions?
 size_t pfacesKernel_mono_synth::initSafeSet(void* pPackedKernel, void* pPackedParallelProgram) {
     pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
     pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
