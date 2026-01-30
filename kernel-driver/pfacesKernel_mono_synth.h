@@ -119,8 +119,8 @@ public:
   int MAX_BUCKET_SIZE;
   
   /* safe set data */
-  std::vector<int> m_safe_set_basis;
-  std::vector<int> m_safe_set_flat_indices;
+  int* m_safe_set_basis = nullptr;
+  int* m_safe_set_flat_indices = nullptr;
   int m_safe_set_size = 0;
   int m_iterations = 0;
   int m_ss_dim = 2;
