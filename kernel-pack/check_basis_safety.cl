@@ -1,6 +1,14 @@
+/*
+* check_basis_safety.cl
+*
+*  date    : 20.01.2026
+*  about   : Soon.
+* ***********************************************************************
+*/
+
 // Safety Check Kernel - Monotone Synthesis
 // Checks if each basis element remains safe after one transition.
-// Requires: SS_DIM (state dimension), TOTAL_STATES (grid size)
+// Parameters: @@STATE_DIM@@ (state dimension), @@TOTAL_STATES@@ (grid size)
 
 kernel void check_basis_safety(
     __global const int* basis_flat_idx,        // Flattened indices of basis elements
@@ -15,15 +23,15 @@ kernel void check_basis_safety(
 
     // Get flat index and validate
     const int flat_idx = basis_flat_idx[basis_idx];
-    if (flat_idx < 0 || flat_idx >= TOTAL_STATES) {
+    if (flat_idx < 0 || flat_idx >= @@TOTAL_STATES@@) {
         unsafe_flags[basis_idx] = 1;
         return;
     }
 
     // Look up next state from transition table
-    int next_state[SS_DIM];
-    for (int i = 0; i < SS_DIM; ++i) {
-        next_state[i] = next_state_table[flat_idx * SS_DIM + i];
+    int next_state[@@STATE_DIM@@];
+    for (int i = 0; i < @@STATE_DIM@@; ++i) {
+        next_state[i] = next_state_table[flat_idx * @@STATE_DIM@@ + i];
     }
 
     // Check if next state is out-of-bounds (-1 signals OOB)
@@ -37,8 +45,8 @@ kernel void check_basis_safety(
     int unsafe = 1;
     for (int i = 0; i < basis_list_size; ++i) {
         int dominated = 1;
-        for (int j = 0; j < SS_DIM; ++j) {
-            if (next_state[j] > basis_list[i * SS_DIM + j]) {
+        for (int j = 0; j < @@STATE_DIM@@; ++j) {
+            if (next_state[j] > basis_list[i * @@STATE_DIM@@ + j]) {
                 dominated = 0;
                 break;
             }

@@ -87,33 +87,7 @@ public:
   pfacesKernel_mono_synth(const std::shared_ptr<pfacesKernelLaunchState>& spLaunchState, const std::shared_ptr<pfacesConfigurationReader>& spCfg);
 
   /* destructor */
-  ~pfacesKernel_mono_synth() {
-    delete[] m_safe_set_basis;
-    delete[] m_safe_set_flat_indices;
-    delete[] m_unsafe_mask;
-    delete[] m_seen_neighbors;
-    delete[] m_neighbor_buffer;
-    delete[] m_neighbor_parent_dim;
-    delete[] m_neighbor_parent_coord;
-    
-    if (m_coord_buckets) {
-      for (int i = 0; i < MAX_STATE_DIM; ++i) {
-        if (m_coord_buckets[i]) {
-          for (int j = 0; j < MAX_COORD_VALUE; ++j) {
-            delete[] m_coord_buckets[i][j];
-          }
-          delete[] m_coord_buckets[i];
-        }
-      }
-      delete[] m_coord_buckets;
-    }
-    
-    if (m_bucket_sizes) {
-      for (int i = 0; i < MAX_STATE_DIM; ++i) {
-        delete[] m_bucket_sizes[i];
-      }
-      delete[] m_bucket_sizes;
-    }
+  ~pfacesKernel_mono_synth(){    
   }
 
   /* pFaces program configuration */
@@ -144,6 +118,7 @@ public:
   int MAX_COORD_VALUE;
   int MAX_BUCKET_SIZE;
   
+  /* safe set data */
   int* m_safe_set_basis = nullptr;
   int* m_safe_set_flat_indices = nullptr;
   int m_safe_set_size = 0;
@@ -152,15 +127,15 @@ public:
   std::chrono::high_resolution_clock::time_point m_compute_start;
   
   /* coordinate index for O(1) redundancy lookup */
-  int*** m_coord_buckets = nullptr;
-  int** m_bucket_sizes = nullptr;
+  std::vector<std::vector<std::vector<int>>> m_coord_buckets;
+  std::vector<std::vector<int>> m_bucket_sizes;
   
   /* persistent work buffers - reused across iterations */
-  unsigned char* m_unsafe_mask = nullptr;
-  unsigned char* m_seen_neighbors = nullptr;
-  int* m_neighbor_buffer = nullptr;
-  int* m_neighbor_parent_dim = nullptr;
-  int* m_neighbor_parent_coord = nullptr;
+  std::vector<unsigned char> m_unsafe_mask;
+  std::vector<unsigned char> m_seen_neighbors;
+  std::vector<int> m_neighbor_buffer;
+  std::vector<int> m_neighbor_parent_dim;
+  std::vector<int> m_neighbor_parent_coord;
   
   /* benchmark results */
   int m_benchmark_count = 10;

@@ -15,7 +15,7 @@
 #include <algorithm>
 
 #include "pfacesKernel_mono_synth.h"
-#include <filesystem>
+
 namespace mono_synth {
 
 
@@ -26,7 +26,6 @@ size_t pfacesKernel_mono_synth::saveTransitionTable(void* pPackedKernel, void* p
 	const static pfacesParallelProgram*  pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
 	const char* pDataTransitionTable = pParallelProgram->m_dataPool[0].first;
 	int ss_dim = ((pfacesKernel_mono_synth*)(pPackedKernel))->m_spCfg->getSsDim();
-	// int number_of_states = number_of_elements/ss_dim;
 	int number_of_states = ((pfacesKernel_mono_synth*)(pPackedKernel))->x_flat_width;
 	int number_of_elements = number_of_states*ss_dim;
 
@@ -49,19 +48,13 @@ size_t pfacesKernel_mono_synth::loadTransitionTable(void* pPackedKernel, void* p
 	// retrieving the required values
 	const static pfacesParallelProgram*  pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
 	char* pDataTransitionTable = pParallelProgram->m_dataPool[0].first;
-	// auto transition_table_size = pParallelProgram->m_dataPool[0].second;
 
-	// save to file
+	// load from file
 	const char* file_path = ((pfacesKernel_mono_synth*)(pPackedKernel))->cache_file;
-	// int number_of_elements = transition_table_size/sizeof(cl_int);
 	int ss_dim = ((pfacesKernel_mono_synth*)(pPackedKernel))->m_spCfg->getSsDim();
-	// int number_of_states = number_of_elements/ss_dim;
 	int number_of_states = ((pfacesKernel_mono_synth*)(pPackedKernel))->x_flat_width;
 	int number_of_elements = number_of_states*ss_dim;
-
-	// load
 	std::ifstream cache_in(file_path, std::ios::binary);
-        
 	if (cache_in.good()) {
 		int cached_total_states;
 		cache_in.read(reinterpret_cast<char*>(&cached_total_states), sizeof(int));
@@ -74,25 +67,72 @@ size_t pfacesKernel_mono_synth::loadTransitionTable(void* pPackedKernel, void* p
 	return 0;
 }
 
+/* getting the parameter list for the kernel */
 std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_synth::getParameterList() {
 	
 	std::vector<std::string> params;
 	std::vector<std::string> paramvals;
 
-	/* User dynamics code injection - this is a text replacement, not a compiler define */
+	/* User dynamics code injection */
 	std::string dynamics_file = m_spCfg->getUserDynamicsFile();
 	std::string dynamics_code = "";
 	if (!dynamics_file.empty()) {
-		std::cout << "[MonoSynth] Reading user dynamics from: " << dynamics_file << std::endl;
 		try {
 			dynamics_code = pfacesFileIO::readTextFromFile(dynamics_file);
-			std::cout << "[MonoSynth] Successfully read user dynamics (" << dynamics_code.length() << " chars)" << std::endl;
 		} catch (...) {
 			std::cerr << "[MonoSynth] Error: Could not read user dynamics file: " << dynamics_file << std::endl;
 		}
 	}
 	params.push_back("@@USER_DYNAMICS_CODE@@");
 	paramvals.push_back(dynamics_code);
+
+    /* System Dimensions */
+    params.push_back("@@STATE_DIM@@");
+    paramvals.push_back(std::to_string(m_spCfg->getSsDim()));
+    params.push_back("@@INPUT_DIM@@");
+    paramvals.push_back(std::to_string(m_spCfg->getIsDim()));
+    params.push_back("@@DISTURB_DIM@@");
+    paramvals.push_back(std::to_string(m_spCfg->getDisturbDim()));
+    params.push_back("@@TOTAL_STATES@@");
+    paramvals.push_back(std::to_string(x_flat_width));
+
+    /* Solver Config */
+    params.push_back("@@ODE_STEPS@@");
+    paramvals.push_back(std::to_string(m_spCfg->getOdeSteps()));
+    params.push_back("@@SAMPLING_TIME@@");
+    paramvals.push_back(std::to_string(m_spCfg->getSamplingPeriod()) + "f");
+
+    /* State Space Arrays */
+    auto lb = m_spCfg->getSsLb();
+    auto ub = m_spCfg->getSsUb();
+    auto eta = m_spCfg->getSsEta();
+    auto pri = m_spCfg->getSsPriorities();
+
+    std::stringstream ss_lb, ss_ub, ss_res, ss_pri;
+    ss_lb << std::fixed << std::setprecision(6) << "{";
+    ss_ub << std::fixed << std::setprecision(6) << "{";
+    ss_res << std::fixed << std::setprecision(6) << "{";
+    ss_pri << "{";
+    
+    for (size_t i = 0; i < m_spCfg->getSsDim(); ++i) {
+        if (i > 0) {
+            ss_lb << ","; ss_ub << ","; ss_res << ","; ss_pri << ",";
+        }
+        ss_lb << lb[i] << "f";
+        ss_ub << ub[i] << "f";
+        ss_res << eta[i] << "f";
+        ss_pri << pri[i];
+    }
+    ss_lb << "}"; ss_ub << "}"; ss_res << "}"; ss_pri << "}";
+
+    params.push_back("@@X_MIN_ARRAY@@");
+    paramvals.push_back(ss_lb.str());
+    params.push_back("@@X_MAX_ARRAY@@");
+    paramvals.push_back(ss_ub.str());
+    params.push_back("@@X_RES_ARRAY@@");
+    paramvals.push_back(ss_res.str());
+    params.push_back("@@X_PRIORITY_ARRAY@@");
+    paramvals.push_back(ss_pri.str());
 
 	return std::make_pair(params, paramvals);
 }
@@ -120,8 +160,8 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	MAX_BUCKET_SIZE = std::max(64, MAX_BASIS_ELEMENTS / 5);
 	
 	// setting the dimensions of the base 2d kernel object
-	size_t ssDim = m_spCfg->getSsDim();
-	size_t isDim = m_spCfg->getIsDim();
+	const size_t ssDim = m_spCfg->getSsDim();
+	const size_t isDim = m_spCfg->getIsDim();
 
 	// Convert concrete space into flat space for X
 	// MUST DO THIS FIRST to get X_widthPerDimension for MAX_COORD_VALUE calculation
@@ -138,28 +178,21 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	// Add small buffer for safety
 	MAX_COORD_VALUE += 1;
 	
-	// NOW allocate dynamic arrays (after MAX_COORD_VALUE is known)
-	m_safe_set_basis = new int[MAX_BASIS_ELEMENTS * MAX_STATE_DIM]();
-	m_safe_set_flat_indices = new int[MAX_BASIS_ELEMENTS]();
-	m_unsafe_mask = new unsigned char[MAX_BASIS_ELEMENTS]();
-	m_neighbor_buffer = new int[MAX_BASIS_ELEMENTS * MAX_STATE_DIM * MAX_STATE_DIM]();
-	m_neighbor_parent_dim = new int[MAX_BASIS_ELEMENTS * MAX_STATE_DIM]();
-	m_neighbor_parent_coord = new int[MAX_BASIS_ELEMENTS * MAX_STATE_DIM]();
+	// Allocate dynamic arrays (after MAX_COORD_VALUE is known)
+    // Pointer initialization (actual pointers assigned in initSafeSet)
+    m_safe_set_basis = nullptr;
+	m_safe_set_flat_indices = nullptr;
+    m_unsafe_mask = std::vector<unsigned char>(MAX_BASIS_ELEMENTS, 0);
+	m_neighbor_buffer = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM * MAX_STATE_DIM, 0);
+	m_neighbor_parent_dim = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM, 0);
+	m_neighbor_parent_coord = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM, 0);
+    m_seen_neighbors = std::vector<unsigned char>(x_flat_width, 0);
 	
 	// Allocate 3D array for coord_buckets
-	m_coord_buckets = new int**[MAX_STATE_DIM];
-	for (int i = 0; i < MAX_STATE_DIM; ++i) {
-		m_coord_buckets[i] = new int*[MAX_COORD_VALUE];
-		for (int j = 0; j < MAX_COORD_VALUE; ++j) {
-			m_coord_buckets[i][j] = new int[MAX_BUCKET_SIZE]();
-		}
-	}
+	m_coord_buckets = std::vector<std::vector<std::vector<int>>>(MAX_STATE_DIM, std::vector<std::vector<int>>(MAX_COORD_VALUE, std::vector<int>(MAX_BUCKET_SIZE, 0)));
 	
 	// Allocate 2D array for bucket_sizes
-	m_bucket_sizes = new int*[MAX_STATE_DIM];
-	for (int i = 0; i < MAX_STATE_DIM; ++i) {
-		m_bucket_sizes[i] = new int[MAX_COORD_VALUE]();
-	}
+	m_bucket_sizes = std::vector<std::vector<int>>(MAX_STATE_DIM, std::vector<int>(MAX_COORD_VALUE, 0));
 
 	// Loading the memory fingerprint of the abstract functions from .mem files
 	std::string precomputeMem = packPath + "precompute_transitions.mem";
@@ -195,7 +228,6 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	size_t beVerboseLevel = parallelProgram.m_beVerboseLevel;
 
 	// Distribute jobs
-    // TODO: Replace OpenCL with pFaces API
 	cl::NDRange ndrPrecompute{x_flat_width, 1, 1}, ndrCheckSafety{(size_t)MAX_BASIS_ELEMENTS, 1, 1}, ndrOffset{0, 0, 0};
 	job_execPrecomputeTransition = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_IDX, ndrPrecompute, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
     job_execCheckBasisSafety = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_IDX, ndrCheckSafety, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
@@ -207,10 +239,10 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	std::vector<std::pair<char*, size_t>> dataPool;
 	pFacesMemoryAllocationReport memReport = allocateMemory(dataPool, parallelProgram.getMachine(), parallelProgram.getTargetDevicesIndicies(), 1, false);
     if (beVerboseLevel >= 2) memReport.PrintReport();
-    // TODO: Replace OpenCL with pFaces API
-	const cl::Device& dataAccessDevice = parallelProgram.getTargetDevices()[0];
 
 	// IO jobs
+    ///TODO: Use the #defines in the .h file instead of tbe hard-coded numbers below
+    const cl::Device& dataAccessDevice = parallelProgram.getTargetDevices()[0];
     job_readNextStateTable = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, 0, 1, 0);
     job_writeNextStateTable = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 0, 1, 0);
     job_readUnsafeFlags = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, 1, 5, 4);
@@ -229,7 +261,8 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     instr_logOff->setAsLogOff();
     instr_logOn->setAsLogOn();
 
-	// Cache check
+	// Check if cache file is available and compatible cache
+    /// TODO: this will be problematic if we have two examples with same state space size but different dynamics loading from the same file! Maybe use project_name as part of the cache file name?
 	bool useCache = false;
 	std::ifstream cache_check(cache_file, std::ios::binary);
 	if (cache_check.good()) {
@@ -257,6 +290,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	}
 
     // Benchmark initialization
+    /// TODO: Will all users need benchmarking? Make this optional with some if statement and a parameter coming from outside?
     instructionList.push_back(std::make_shared<pfacesInstruction>());
     instructionList.back()->setAsBlockingSyncPoint();
     
@@ -302,6 +336,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     instructionList.push_back(instr_jumpToSafeSetStart);
 
     // Benchmark next run
+    ///TODO: same comment on benchmarking as above applies
     instructionList.push_back(std::make_shared<pfacesInstruction>());
     instructionList.back()->setAsBlockingSyncPoint();
 
@@ -320,83 +355,38 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	parallelProgram.m_Universal_globalNDRange = parallelProgram.m_Process_globalNDRange = ndrPrecompute;
 	parallelProgram.m_Universal_offsetNDRange = parallelProgram.m_Process_offsetNDRange = ndrOffset;
     
-    // Standard pFaces defines
-    parallelProgram.m_compilerDefinesList.push_back({"SS_DIM", std::to_string(m_spCfg->getSsDim())});
-    parallelProgram.m_compilerDefinesList.push_back({"TOTAL_STATES", std::to_string(x_flat_width)});
+	parallelProgram.m_Universal_globalNDRange = parallelProgram.m_Process_globalNDRange = ndrPrecompute;
+	parallelProgram.m_Universal_offsetNDRange = parallelProgram.m_Process_offsetNDRange = ndrOffset;
     
-    // MonoSynth kernel defines - dimensions
-    parallelProgram.m_compilerDefinesList.push_back({"STATE_DIM", std::to_string(m_spCfg->getSsDim())});
-    parallelProgram.m_compilerDefinesList.push_back({"INPUT_DIM", std::to_string(m_spCfg->getIsDim())});
-    parallelProgram.m_compilerDefinesList.push_back({"DISTURB_DIM", std::to_string(m_spCfg->getDisturbDim())});
-    
-    // MonoSynth kernel defines - solver config
-    parallelProgram.m_compilerDefinesList.push_back({"ODE_STEPS", std::to_string(m_spCfg->getOdeSteps())});
-    parallelProgram.m_compilerDefinesList.push_back({"SAMPLING_TIME", std::to_string(m_spCfg->getSamplingPeriod()) + "f"});
-    
-    // MonoSynth kernel defines - state space arrays
-    auto lb = m_spCfg->getSsLb();
-    auto ub = m_spCfg->getSsUb();
-    auto eta = m_spCfg->getSsEta();
-    auto pri = m_spCfg->getSsPriorities();
-    
-    std::stringstream ss_lb, ss_ub, ss_res, ss_pri;
-    ss_lb << std::fixed << std::setprecision(6);
-    ss_ub << std::fixed << std::setprecision(6);
-    ss_res << std::fixed << std::setprecision(6);
-    
-    ss_lb << "{";
-    ss_ub << "{";
-    ss_res << "{";
-    ss_pri << "{";
-    
-    for (size_t i = 0; i < m_spCfg->getSsDim(); ++i) {
-        if (i > 0) {
-            ss_lb << ",";
-            ss_ub << ",";
-            ss_res << ",";
-            ss_pri << ",";
-        }
-        ss_lb << lb[i] << "f";
-        ss_ub << ub[i] << "f";
-        ss_res << eta[i] << "f";
-        ss_pri << pri[i];
-    }
-    
-    ss_lb << "}";
-    ss_ub << "}";
-    ss_res << "}";
-    ss_pri << "}";
-    
-    parallelProgram.m_compilerDefinesList.push_back({"X_MIN_ARRAY", ss_lb.str()});
-    parallelProgram.m_compilerDefinesList.push_back({"X_MAX_ARRAY", ss_ub.str()});
-    parallelProgram.m_compilerDefinesList.push_back({"X_RES_ARRAY", ss_res.str()});
-    parallelProgram.m_compilerDefinesList.push_back({"X_PRIORITY_ARRAY", ss_pri.str()});
-	
     // Point parallelProgram.m_dataPool to our allocated dataPool
     parallelProgram.m_dataPool = dataPool;
 	parallelProgram.m_spInstructionList = instructionList;
 }
 
 /* Safe Set Host Functions */
-
+///TODO: some functions below are host-side functions. What about moving them above in the file with other host-side functions?
 size_t pfacesKernel_mono_synth::initSafeSet(void* pPackedKernel, void* pPackedParallelProgram) {
     pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
     pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
 
     pKernel->m_ss_dim = pKernel->m_spCfg->getSsDim();
     
-    // Allocate seen_neighbors once (persists across benchmark runs)
-    if (!pKernel->m_seen_neighbors) {
-        pKernel->m_seen_neighbors = new unsigned char[pKernel->x_flat_width];
-    }
+    // Assign pointers directly from the data pool
+    pKernel->m_safe_set_flat_indices = (int*)pParallelProgram->m_dataPool[1].first;
+    pKernel->m_safe_set_basis = (int*)pParallelProgram->m_dataPool[2].first;
     
-    // Zero the arrays
-    std::memset(pKernel->m_safe_set_basis, 0, pKernel->MAX_BASIS_ELEMENTS * pKernel->MAX_STATE_DIM * sizeof(int));
-    std::memset(pKernel->m_safe_set_flat_indices, 0, pKernel->MAX_BASIS_ELEMENTS * sizeof(int));
+    if (!pKernel->m_safe_set_flat_indices || !pKernel->m_safe_set_basis) {
+        std::cerr << "[MonoSynth] Error: Null pointer in dataPool!" << std::endl;
+        return 1;
+    }
+
+    // Zero the arrays (important as we reuse these pooled buffers)
+    std::memset(pKernel->m_safe_set_basis, 0, (size_t)pKernel->MAX_BASIS_ELEMENTS * (size_t)pKernel->MAX_STATE_DIM * sizeof(int));
+    std::memset(pKernel->m_safe_set_flat_indices, 0, (size_t)pKernel->MAX_BASIS_ELEMENTS * sizeof(int));
     
     // Clear coordinate buckets (prevents stale indices from previous runs)
     for (int i = 0; i < pKernel->MAX_STATE_DIM; ++i) {
-        std::memset(pKernel->m_bucket_sizes[i], 0, pKernel->MAX_COORD_VALUE * sizeof(int));
+        std::memset(pKernel->m_bucket_sizes[i].data(), 0, pKernel->MAX_COORD_VALUE * sizeof(int));
     }
     
     // Initialize to corner of the box
@@ -419,18 +409,12 @@ size_t pfacesKernel_mono_synth::prepareSafeSetIteration(void* pPackedKernel, voi
 
     pKernel->m_iterations++;
 
-    // Direct copy to data pool (no intermediate vectors)
-    int* pBasisFlatIdx = (int*)pParallelProgram->m_dataPool[1].first;
-    int* pBasisList = (int*)pParallelProgram->m_dataPool[2].first;
     int* pBasisListSize = (int*)pParallelProgram->m_dataPool[3].first;
-    
-    std::memcpy(pBasisFlatIdx, pKernel->m_safe_set_flat_indices, pKernel->m_safe_set_size * sizeof(int));
-    std::memcpy(pBasisList, pKernel->m_safe_set_basis, pKernel->m_safe_set_size * ss_dim * sizeof(int));
-    *pBasisListSize = pKernel->m_safe_set_size;
+    if (pBasisListSize) {
+        *pBasisListSize = pKernel->m_safe_set_size;
+    }
 
     // Update ND-Range
-
-    //TODO: Replace OPENCL with PFACES API
     cl::NDRange ndRange(pKernel->m_safe_set_size, 1, 1);
     for (auto& job : pKernel->job_execCheckBasisSafety) {
         job->getTasks()[0]->setNdRangeGlobal(ndRange);
@@ -501,8 +485,8 @@ int pfacesKernel_mono_synth::updateSafeSet(int* unsafe_flags) {
     const int total_states = x_flat_width;
     
     // Clear persistent buffers
-    std::memset(m_unsafe_mask, 0, m_safe_set_size * sizeof(unsigned char));
-    std::memset(m_seen_neighbors, 0, total_states * sizeof(unsigned char));
+    std::memset(m_unsafe_mask.data(), 0, m_safe_set_size * sizeof(unsigned char));
+    std::memset(m_seen_neighbors.data(), 0, total_states * sizeof(unsigned char));
 
     // Pass 1: Find unsafe elements and generate unique neighbors
     // Store which dimension was decremented for each neighbor (for indexed redundancy check)
@@ -610,10 +594,8 @@ int pfacesKernel_mono_synth::updateSafeSet(int* unsafe_flags) {
 
 void pfacesKernel_mono_synth::rebuildCoordIndex() {
     const int ss_dim = m_ss_dim;
-    
-    // Clear all bucket sizes
     for (int i = 0; i < MAX_STATE_DIM; ++i) {
-        std::memset(m_bucket_sizes[i], 0, MAX_COORD_VALUE * sizeof(int));
+        std::memset(m_bucket_sizes[i].data(), 0, MAX_COORD_VALUE * sizeof(int));
     }
     
     // Populate index from current basis
