@@ -1532,6 +1532,12 @@ void configReader::load_values() {
 		m_save_transitions = m_spConfigObject->readConfigValueBool("save_transitions");
 		m_save_controller = m_spConfigObject->readConfigValueBool("save_controller");
 
+		try {
+			m_record_basis_evolution = m_spConfigObject->readConfigValueBool("record_basis_evolution");
+		} catch (...) {
+			m_record_basis_evolution = false;
+		}
+
 		m_statedim = m_spConfigObject->readConfigValueInt("states.dim");
 		m_stateeta = m_spConfigObject->readConfigValueString("states.eta");
 		m_statelb = m_spConfigObject->readConfigValueString("states.lb");
