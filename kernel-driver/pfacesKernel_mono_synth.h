@@ -87,7 +87,10 @@ public:
   pfacesKernel_mono_synth(const std::shared_ptr<pfacesKernelLaunchState>& spLaunchState, const std::shared_ptr<pfacesConfigurationReader>& spCfg);
 
   /* destructor */
-  ~pfacesKernel_mono_synth(){    
+  ~pfacesKernel_mono_synth() {
+    if (m_basis_csv_file.is_open()) {
+      m_basis_csv_file.close();
+    }
   }
 
   /* pFaces program configuration */
@@ -125,6 +128,10 @@ public:
   int m_iterations = 0;
   int m_ss_dim = 2;
   std::chrono::high_resolution_clock::time_point m_compute_start;
+  
+  // Basis evolution recording
+  bool m_record_basis_evolution = false;
+  std::ofstream m_basis_csv_file;
   
   /* coordinate index for O(1) redundancy lookup */
   std::vector<std::vector<std::vector<int>>> m_coord_buckets;

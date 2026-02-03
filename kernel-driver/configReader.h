@@ -40,6 +40,7 @@ class configReader {
 	std::string m_data;
 	bool            m_save_transitions;
 	bool            m_save_controller;
+	bool            m_record_basis_evolution;
 
 	bool			m_hasTarget;
 	size_t			m_targetCount;
@@ -155,6 +156,7 @@ public:
 
 	inline bool isSaveTransitions() const { return m_save_transitions; }
 	inline bool isSaveController() const { return m_save_controller; }
+	inline bool isRecordBasisEvolution() const { return m_record_basis_evolution; }
 
 	inline bool isHasTarget() const { return m_hasTarget; }
 	inline bool isHasSafe() const { return m_hasSafe; }

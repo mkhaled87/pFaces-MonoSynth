@@ -194,6 +194,24 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	// Allocate 2D array for bucket_sizes
 	m_bucket_sizes = std::vector<std::vector<int>>(MAX_STATE_DIM, std::vector<int>(MAX_COORD_VALUE, 0));
 
+	// Setup basis evolution recording if enabled
+	m_record_basis_evolution = m_spCfg->isRecordBasisEvolution();
+	if (m_record_basis_evolution) {
+		m_basis_csv_file.open("basis_coordinates.csv");
+		if (m_basis_csv_file.is_open()) {
+			// Write CSV header
+			m_basis_csv_file << "iteration";
+            for (int i = 0; i < (int)ssDim; ++i) {
+                m_basis_csv_file << ",idx" << i;
+            }
+            m_basis_csv_file << "\n";
+			std::cout << "[MonoSynth] Recording basis evolution to basis_coordinates.csv" << std::endl;
+		} else {
+			std::cerr << "[MonoSynth] Warning: Could not open basis_coordinates.csv for recording" << std::endl;
+			m_record_basis_evolution = false;
+		}
+	}
+
 	// Loading the memory fingerprint of the abstract functions from .mem files
 	std::string precomputeMem = packPath + "precompute_transitions.mem";
 	std::cout << "[MonoSynth] Loading memory fingerprint from: " << precomputeMem << std::endl;
@@ -412,6 +430,18 @@ size_t pfacesKernel_mono_synth::prepareSafeSetIteration(void* pPackedKernel, voi
     int* pBasisListSize = (int*)pParallelProgram->m_dataPool[3].first;
     if (pBasisListSize) {
         *pBasisListSize = pKernel->m_safe_set_size;
+    }
+
+    // Record basis coordinates to CSV if enabled
+    if (pKernel->m_record_basis_evolution && pKernel->m_basis_csv_file.is_open()) {
+        for (int i = 0; i < pKernel->m_safe_set_size; ++i) {
+            pKernel->m_basis_csv_file << pKernel->m_iterations;
+            for (int j = 0; j < ss_dim; ++j) {
+                pKernel->m_basis_csv_file << "," << pKernel->m_safe_set_basis[i * ss_dim + j];
+            }
+            pKernel->m_basis_csv_file << "\n";
+        }
+        pKernel->m_basis_csv_file.flush();  // Ensure data is written immediately
     }
 
     // Update ND-Range
