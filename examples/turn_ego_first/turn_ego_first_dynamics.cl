@@ -79,7 +79,10 @@ inline float compute_vehicle_accel(float v, float T) {
     return dvdt;
 }
 
-inline void ode_rhs(const float* x, const float* u, const float* w, float* dxdt) {
+inline void ode_rhs(const float* x, const float* u, const float* w, float* dxdt, const float* rt_params) {
+    // Use runtime V0_MAX if provided (rt_params[0] > 0), else compile-time default.
+    float v0_max = (rt_params[0] > 0.0f) ? rt_params[0] : V0_MAX;
+
     // Check if goal reached (self-loop logic)
     // Goal is Zone 3 (s > 10). 
     // But since s_max is 10, we loop at s == 10.
@@ -92,7 +95,7 @@ inline void ode_rhs(const float* x, const float* u, const float* w, float* dxdt)
 
     dxdt[0] = x[1]; // ds/dt = v
     dxdt[1] = compute_vehicle_accel(x[1], u[0]);
-    dxdt[2] = V0_MAX; // ds0/dt = v0_max
+    dxdt[2] = v0_max; // ds0/dt = v0_max (runtime parameter)
 }
 
 inline void apply_state_constraints(float* x) {

@@ -325,6 +325,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	instructionList.push_back(instr_writeRuntimeParams);
 
 	if (useCache) {
+        instructionList.push_back(instr_BlockingSyncPoint);
 		instr_hostFuncLoadNextStateTable->setAsHostFunction(pfacesKernel_mono_synth::loadTransitionTable, "loadTransitionTable");
 		instructionList.push_back(instr_hostFuncLoadNextStateTable);
 		instructionList.push_back(instr_writeNextStateTable);

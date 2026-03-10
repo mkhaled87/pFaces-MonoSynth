@@ -64,8 +64,9 @@ inline float compute_vehicle_accel(float v, float T, bool is_lead) {
 /**
  * ODE right-hand side: dx/dt = f(x, u, w)
  * State: [headway, ego_velocity, lead_velocity]
+ * `rt_params` is reserved for runtime overrides and unused in ACC.
  */
-inline void ode_rhs(const float* x, const float* u, const float* w, float* dxdt) {
+inline void ode_rhs(const float* x, const float* u, const float* w, float* dxdt, const float* rt_params) {
     const float a_ego = compute_vehicle_accel(x[1], u[0], false);
     const float a_lead = compute_vehicle_accel(x[2], w[0], true);
     
