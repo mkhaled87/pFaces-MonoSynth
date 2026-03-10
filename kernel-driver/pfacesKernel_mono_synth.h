@@ -17,9 +17,11 @@ namespace mono_synth {
 // Kernel function names and their arguments
 #define KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME "precompute_transitions"
 #define KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_IDX 0
-#define KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NUM_ARGS 1
+#define KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NUM_ARGS 2
 #define KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_NEXT_STATE_TABLE_NAME "next_state_table"
 #define KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_NEXT_STATE_TABLE_IDX 0
+#define KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_RUNTIME_PARAMS_NAME "runtime_params"
+#define KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_RUNTIME_PARAMS_IDX 1
 
 // Safety check kernel
 #define KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_NAME "check_basis_safety"
@@ -36,6 +38,20 @@ namespace mono_synth {
 #define KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_UNSAFE_FLAGS_NAME "unsafe_flags"
 #define KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_UNSAFE_FLAGS_IDX 4
 
+// Bitmap construction kernel (GPU)
+#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_NAME "build_bitmap"
+#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_IDX 2
+#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_NUM_ARGS 3
+#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BITMAP_NAME "bitmap"
+#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BITMAP_IDX 0
+#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BASIS_LIST_NAME "basis_list"
+#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BASIS_LIST_IDX 1
+#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BASIS_LIST_SIZE_NAME "basis_list_size_ptr"
+#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BASIS_LIST_SIZE_IDX 2
+
+// DataPool index for the GPU bitmap buffer
+#define BITMAP_DATA_POOL_IDX 6
+
 
 /**********************************************************/
 /** pfacesKernel_mono_synth *************************************/
@@ -49,6 +65,7 @@ private:
   std::vector<std::shared_ptr<pfacesDeviceExecuteJob>> job_execPrecomputeTransition;
   std::shared_ptr<pfacesDeviceReadJob> job_readNextStateTable;
   std::shared_ptr<pfacesDeviceWriteJob> job_writeNextStateTable;
+  std::shared_ptr<pfacesDeviceWriteJob> job_writeRuntimeParams;
 
   /* Safe Set Jobs */
   std::vector<std::shared_ptr<pfacesDeviceExecuteJob>> job_execCheckBasisSafety;
@@ -57,11 +74,16 @@ private:
   std::shared_ptr<pfacesDeviceWriteJob> job_writeBasisList;
   std::shared_ptr<pfacesDeviceWriteJob> job_writeBasisListSize;
 
+  /* GPU Bitmap Jobs */
+  std::vector<std::shared_ptr<pfacesDeviceExecuteJob>> job_execBuildBitmap;
+  std::shared_ptr<pfacesDeviceReadJob> job_readBitmap;
+
   /* instructions for the parallel program */
   std::vector<std::shared_ptr<pfacesInstruction>> instructionList;
   std::shared_ptr<pfacesInstruction> instr_BlockingSyncPoint = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_readNextStateTable = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_writeNextStateTable = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_writeRuntimeParams = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_hostFuncSaveTransitions = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_hostFuncLoadNextStateTable = std::make_shared<pfacesInstruction>();
   
@@ -79,6 +101,11 @@ private:
   std::shared_ptr<pfacesInstruction> instr_hostFuncBenchmarkStart = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_hostFuncBenchmarkNext = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_jumpToBenchmarkStart = std::make_shared<pfacesInstruction>();
+
+  /* GPU Bitmap Instructions */
+  std::shared_ptr<pfacesInstruction> instr_readBitmap = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_hostFuncPrepareBitmapGPU = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_hostFuncCopyBitmapFromGPU = std::make_shared<pfacesInstruction>();
 
   size_t x_flat_width;
 
@@ -109,11 +136,28 @@ public:
   static size_t processSafeSetUpdate(void* pPackedKernel, void* pPackedParallelProgram);
   static size_t benchmarkStart(void* pPackedKernel, void* pPackedParallelProgram);
   static size_t benchmarkNext(void* pPackedKernel, void* pPackedParallelProgram);
+  static size_t prepareBitmapGPU(void* pPackedKernel, void* pPackedParallelProgram);
+  static size_t copyBitmapFromGPU(void* pPackedKernel, void* pPackedParallelProgram);
 
   /* internal helper for safe set */
   int flattenIndex(const int* idx) const;
   int updateSafeSet(int* unsafe_flags);
   void rebuildCoordIndex();
+
+  /* public accessors for direct SDK integration */
+  const std::vector<uint8_t>& getBitmap() const { return m_bitmap; }
+  int getBitmapSize() const { return (int)x_flat_width; }
+  int getBasisSize() const { return m_safe_set_size; }
+  const int* getBasisData() const { return m_safe_set_basis; }
+  int getStateDim() const { return m_ss_dim; }
+  const std::vector<cl_ulong>& getGridSizes() const { return X_widthPerDimension; }
+
+  /* direct-mode controls */
+  void setSkipCache(bool v) { m_skip_cache = v; }
+  void setBenchmarkCount(int c) { m_benchmark_count = c; }
+  void setRecordBasisEvolution(bool v) { m_record_basis_evolution = v; }
+  void setRuntimeParam0(float value) { m_runtime_param0 = value; }
+  float getRuntimeParam0() const { return m_runtime_param0; }
 
   /* safe set state - will be initialized from config */
   int MAX_BASIS_ELEMENTS;
@@ -149,6 +193,14 @@ public:
   int m_benchmark_current_run = 0;
   double m_benchmark_total_time_ms = 0;
   int m_benchmark_total_iterations = 0;
+
+    /* safe-set bitmap computed by the GPU build_bitmap kernel, then remapped
+      on host into the SafeSet row-major convention for direct-mode access */
+  std::vector<uint8_t> m_bitmap;
+  
+  /* direct-mode flags */
+  bool m_skip_cache = false;
+    float m_runtime_param0 = 0.0f;  // 0 = use compile-time default from dynamics file
 
   /* providing implementation of the virtual method: getParameterList*/
   std::pair<std::vector<std::string>, std::vector<std::string>> getParameterList();

@@ -5,4 +5,8 @@ precompute_transitions {
         HostDoWrite = "true";
         HostDoRead = "true";
     }
+    runtime_params {
+        MemConfig = "pfaces_rw_global";
+        HostDoWrite = "true";
+    }
 }

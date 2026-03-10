@@ -12,3 +12,6 @@
 
 // pFaces-Including a KERNEL-Function: check_basis_safety
 @pfaces-include:"check_basis_safety.cl"
+
+// pFaces-Including a KERNEL-Function: build_bitmap
+@pfaces-include:"build_bitmap.cl"

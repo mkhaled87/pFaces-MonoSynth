@@ -807,7 +807,14 @@ defaultConfiguration::defaultConfiguration()
 	m_schema[798] = "target.t9.h = string";
 	m_schema[799] = "target.t9.type = string";
 	m_schema[800] = "extra_include_file = string";
-	m_schema[801] = 0;
+	m_schema[801] = "disturbances = scope";
+	m_schema[802] = "disturbances.dim = int";
+	m_schema[803] = "user_dynamics_file = string";
+	m_schema[804] = "ode_steps = int";
+	m_schema[805] = "max_basis_elements = int";
+	m_schema[806] = "record_basis_evolution = boolean";
+	m_schema[807] = "states.priorities = string";
+	m_schema[808] = 0;
 
 
 	std::stringstream m_str;
@@ -862,6 +869,10 @@ defaultConfiguration::defaultConfiguration()
 	m_str << "# Sampling period\n";
 	m_str << "# -------------------------\n";
 	m_str << "sampling_period = \"0.0\";\n";
+	m_str << "user_dynamics_file = \"xxxx\";\n";
+	m_str << "ode_steps = \"100\";\n";
+	m_str << "max_basis_elements = \"10000\";\n";
+	m_str << "record_basis_evolution = \"false\";\n";
 	m_str << "\n";
 	m_str << "\n";
 	m_str << "# State/Input sets\n";
@@ -872,6 +883,7 @@ defaultConfiguration::defaultConfiguration()
 	m_str << "\tlb  = \"xxxx\";\n";
 	m_str << "\tub  = \"xxxx\";\n";
 	m_str << "\terr = \"xxxx\";\n";
+	m_str << "\tpriorities = \"xxxx\";\n";
 	m_str << "}\n";
 	m_str << "inputs{\n";
 	m_str << "\tdim = \"0\";\n";
@@ -879,6 +891,9 @@ defaultConfiguration::defaultConfiguration()
 	m_str << "\tlb  = \"xxxx\";\n";
 	m_str << "\tub  = \"xxxx\";\n";
 	m_str << "\terr = \"xxxx\";\n";
+	m_str << "}\n";
+	m_str << "disturbances{\n";
+	m_str << "\tdim = \"0\";\n";
 	m_str << "}\n";
 	m_str << "\n";
 	m_str << "# System-post dynamics\n";

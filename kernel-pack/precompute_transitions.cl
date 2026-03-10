@@ -25,7 +25,7 @@
 // ============================================================================
 
 inline void rk4_step(const float* x, const float* u, const float* w,
-                     float dt, float* x_plus) {
+                     float dt, float* x_plus, const float* rt_params) {
     const float h = dt / @@ODE_STEPS@@;
     float x_curr[@@STATE_DIM@@];
     float k1[@@STATE_DIM@@], k2[@@STATE_DIM@@], k3[@@STATE_DIM@@], k4[@@STATE_DIM@@];
@@ -34,19 +34,19 @@ inline void rk4_step(const float* x, const float* u, const float* w,
     for (int i = 0; i < @@STATE_DIM@@; ++i) x_curr[i] = x[i];
     
     for (int step = 0; step < @@ODE_STEPS@@; ++step) {
-        ode_rhs(x_curr, u, w, k1);
+        ode_rhs(x_curr, u, w, k1, rt_params);
         
         for (int i = 0; i < @@STATE_DIM@@; ++i) 
             x_temp[i] = x_curr[i] + h * 0.5f * k1[i];
-        ode_rhs(x_temp, u, w, k2);
+        ode_rhs(x_temp, u, w, k2, rt_params);
         
         for (int i = 0; i < @@STATE_DIM@@; ++i)
             x_temp[i] = x_curr[i] + h * 0.5f * k2[i];
-        ode_rhs(x_temp, u, w, k3);
+        ode_rhs(x_temp, u, w, k3, rt_params);
         
         for (int i = 0; i < @@STATE_DIM@@; ++i)
             x_temp[i] = x_curr[i] + h * k3[i];
-        ode_rhs(x_temp, u, w, k4);
+        ode_rhs(x_temp, u, w, k4, rt_params);
         
         for (int i = 0; i < @@STATE_DIM@@; ++i)
             x_curr[i] += (h / 6.0f) * (k1[i] + 2.0f*k2[i] + 2.0f*k3[i] + k4[i]);
@@ -111,9 +111,17 @@ inline bool state_to_idx(const float* x,
 // ============================================================================
 
 __kernel void precompute_transitions(
-    __global unsigned int* next_state_table
+    __global unsigned int* next_state_table,
+    __global const float* runtime_params
 ) {
     int gid = get_global_id(0);
+    
+    // Read runtime parameters to private memory for fast access
+    float rt_params[4];
+    rt_params[0] = runtime_params[0]; // V0_MAX (0 = use compile-time default)
+    rt_params[1] = runtime_params[1]; // reserved
+    rt_params[2] = runtime_params[2]; // reserved
+    rt_params[3] = runtime_params[3]; // reserved
     
     // State space configuration (from pFaces placeholders)
     const float x_min[@@STATE_DIM@@] = @@X_MIN_ARRAY@@;
@@ -141,7 +149,7 @@ __kernel void precompute_transitions(
     
     // Next state via RK4 integration
     float x_plus[@@STATE_DIM@@];
-    rk4_step(x, u, w, @@SAMPLING_TIME@@, x_plus);
+    rk4_step(x, u, w, @@SAMPLING_TIME@@, x_plus, rt_params);
     
     // Next state indices (with bounds checking)
     int x_plus_idx[@@STATE_DIM@@];

@@ -218,9 +218,10 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
     auto precomputeArgs = pfacesKernelFunctionArguments::loadFromFile(
         precomputeMem,
         KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME,
-        {KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_NEXT_STATE_TABLE_NAME},
-        false);
-    precomputeArgs.m_baseTypeMultiple = { (size_t)(x_flat_width * ssDim) };
+        {KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_NEXT_STATE_TABLE_NAME,
+         KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_RUNTIME_PARAMS_NAME},
+        true);
+    precomputeArgs.m_baseTypeMultiple = { (size_t)(x_flat_width * ssDim), 4 };
 	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME, precomputeArgs));
 	
 	updateParameters(getParameterList().first, getParameterList().second);
@@ -235,45 +236,67 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
           KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_BASIS_LIST_NAME, 
           KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_BASIS_LIST_SIZE_NAME,
           KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_UNSAFE_FLAGS_NAME },
-        false);
+        true);
     safetyArgs.m_baseTypeMultiple = { (size_t)MAX_BASIS_ELEMENTS, (size_t)(x_flat_width * ssDim), (size_t)(MAX_BASIS_ELEMENTS * ssDim), 1, (size_t)MAX_BASIS_ELEMENTS };
 	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_NAME, safetyArgs));
+
+	// GPU Bitmap kernel (func idx 2)
+	std::string bitmapMem = packPath + "build_bitmap.mem";
+	std::cout << "[MonoSynth] Loading memory fingerprint from: " << bitmapMem << std::endl;
+	auto bitmapArgs = pfacesKernelFunctionArguments::loadFromFile(
+		bitmapMem,
+		KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_NAME,
+		{ KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BITMAP_NAME,
+		  KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BASIS_LIST_NAME,
+		  KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BASIS_LIST_SIZE_NAME },
+		true);
+	bitmapArgs.m_baseTypeMultiple = { (size_t)x_flat_width, (size_t)(MAX_BASIS_ELEMENTS * ssDim), 1 };
+	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_NAME, bitmapArgs));
 }
 
 /* providing implementation of the driver of the kernel */
 void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& parallelProgram) {
 	pfacesParallelAdvisor parallelAdvisor(parallelProgram.getMachine(), parallelProgram.getTargetDevicesIndicies());
 	size_t beVerboseLevel = parallelProgram.m_beVerboseLevel;
+    const bool doBenchmark = (m_benchmark_count > 1);
 
 	// Distribute jobs
 	cl::NDRange ndrPrecompute{x_flat_width, 1, 1}, ndrCheckSafety{(size_t)MAX_BASIS_ELEMENTS, 1, 1}, ndrOffset{0, 0, 0};
+	cl::NDRange ndrBuildBitmap{x_flat_width, 1, 1};
 	job_execPrecomputeTransition = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_IDX, ndrPrecompute, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
     job_execCheckBasisSafety = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_IDX, ndrCheckSafety, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
+    job_execBuildBitmap = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_IDX, ndrBuildBitmap, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
 
 	if (beVerboseLevel >= 2)
 		parallelAdvisor.printTaskSchedulingReport(parallelProgram.getMachine(), { KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME }, { job_execPrecomputeTransition }, x_flat_width);
 
 	// Memory allocation
 	std::vector<std::pair<char*, size_t>> dataPool;
-	pFacesMemoryAllocationReport memReport = allocateMemory(dataPool, parallelProgram.getMachine(), parallelProgram.getTargetDevicesIndicies(), 1, false);
+	pFacesMemoryAllocationReport memReport = allocateMemory(dataPool, parallelProgram.getMachine(), parallelProgram.getTargetDevicesIndicies(), 1, true);
     if (beVerboseLevel >= 2) memReport.PrintReport();
 
 	// IO jobs
     ///TODO: Use the #defines in the .h file instead of tbe hard-coded numbers below
     const cl::Device& dataAccessDevice = parallelProgram.getTargetDevices()[0];
-    job_readNextStateTable = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, 0, 1, 0);
-    job_writeNextStateTable = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 0, 1, 0);
+    job_readNextStateTable = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, 0, 2, 0);
+    job_writeNextStateTable = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 0, 2, 0);
+    job_writeRuntimeParams = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 0, 2, 1);
     job_readUnsafeFlags = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, 1, 5, 4);
     job_writeBasisFlatIdx = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 1, 5, 0);
     job_writeBasisList = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 1, 5, 2);
     job_writeBasisListSize = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 1, 5, 3);
 
+    // GPU Bitmap IO job: read bitmap buffer from device (func2, 3 args, arg0)
+    job_readBitmap = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, 2, 3, 0);
+
     instr_readNextStateTable->setAsReadDeviceBuffer(job_readNextStateTable);
     instr_writeNextStateTable->setAsWriteDeviceBuffer(job_writeNextStateTable);
+    instr_writeRuntimeParams->setAsWriteDeviceBuffer(job_writeRuntimeParams);
     instr_readUnsafeFlags->setAsReadDeviceBuffer(job_readUnsafeFlags);
     instr_writeBasisFlatIdx->setAsWriteDeviceBuffer(job_writeBasisFlatIdx);
     instr_writeBasisList->setAsWriteDeviceBuffer(job_writeBasisList);
     instr_writeBasisListSize->setAsWriteDeviceBuffer(job_writeBasisListSize);
+    instr_readBitmap->setAsReadDeviceBuffer(job_readBitmap);
 
 	instr_BlockingSyncPoint->setAsBlockingSyncPoint();
     instr_logOff->setAsLogOff();
@@ -282,13 +305,24 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	// Check if cache file is available and compatible cache
     /// TODO: this will be problematic if we have two examples with same state space size but different dynamics loading from the same file! Maybe use project_name as part of the cache file name?
 	bool useCache = false;
-	std::ifstream cache_check(cache_file, std::ios::binary);
-	if (cache_check.good()) {
-		int cached_states;
-		cache_check.read(reinterpret_cast<char*>(&cached_states), sizeof(int));
-		if (cached_states == (int)x_flat_width) useCache = true;
+	if (!m_skip_cache) {
+		std::ifstream cache_check(cache_file, std::ios::binary);
+		if (cache_check.good()) {
+			int cached_states;
+			cache_check.read(reinterpret_cast<char*>(&cached_states), sizeof(int));
+			if (cached_states == (int)x_flat_width) useCache = true;
+		}
+		cache_check.close();
 	}
-	cache_check.close();
+
+    // Always write runtime_params before precompute_transitions.
+    // In direct mode, runtime_params[0] is set by the controller integration
+    // via setRuntimeParam0() before running.
+	if (dataPool.size() > 1 && dataPool[1].first) {
+		float* params = (float*)dataPool[1].first;
+        params[0] = m_runtime_param0;  // runtime_params[0] (0 = use compile-time default)
+	}
+	instructionList.push_back(instr_writeRuntimeParams);
 
 	if (useCache) {
 		instr_hostFuncLoadNextStateTable->setAsHostFunction(pfacesKernel_mono_synth::loadTransitionTable, "loadTransitionTable");
@@ -303,22 +337,28 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 		if (parallelProgram.countTargetDevices() > 1) instructionList.push_back(instr_BlockingSyncPoint);
 		instructionList.push_back(instr_readNextStateTable);
 		instructionList.push_back(instr_BlockingSyncPoint);
-		instr_hostFuncSaveTransitions->setAsHostFunction(pfacesKernel_mono_synth::saveTransitionTable, "saveTransitionTable");
-		instructionList.push_back(instr_hostFuncSaveTransitions);
+		if (!m_skip_cache) {
+			instr_hostFuncSaveTransitions->setAsHostFunction(pfacesKernel_mono_synth::saveTransitionTable, "saveTransitionTable");
+			instructionList.push_back(instr_hostFuncSaveTransitions);
+		}
 	}
 
-    // Benchmark initialization
-    /// TODO: Will all users need benchmarking? Make this optional with some if statement and a parameter coming from outside?
-    instructionList.push_back(std::make_shared<pfacesInstruction>());
-    instructionList.back()->setAsBlockingSyncPoint();
-    
-    instr_hostFuncBenchmarkStart->setAsHostFunction(pfacesKernel_mono_synth::benchmarkStart, "benchmarkStart");
-    instructionList.push_back(instr_hostFuncBenchmarkStart);
-    
-    instructionList.push_back(std::make_shared<pfacesInstruction>());
-    instructionList.back()->setAsBlockingSyncPoint();
-
+	// Benchmark loop is only useful when benchmarking more than one run.
+	// In direct controller mode we set m_benchmark_count=1, so skipping this
+	// avoids extra host functions, jumps, and sync points on every synthesis.
     size_t benchmark_loop_start = instructionList.size();
+    if (doBenchmark) {
+        instructionList.push_back(std::make_shared<pfacesInstruction>());
+        instructionList.back()->setAsBlockingSyncPoint();
+
+        instr_hostFuncBenchmarkStart->setAsHostFunction(pfacesKernel_mono_synth::benchmarkStart, "benchmarkStart");
+        instructionList.push_back(instr_hostFuncBenchmarkStart);
+
+        instructionList.push_back(std::make_shared<pfacesInstruction>());
+        instructionList.back()->setAsBlockingSyncPoint();
+
+        benchmark_loop_start = instructionList.size();
+    }
 
     // Safe set iteration
     instructionList.push_back(std::make_shared<pfacesInstruction>());
@@ -353,20 +393,51 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     instr_jumpToSafeSetStart->setAsJumpNe(loop_start);
     instructionList.push_back(instr_jumpToSafeSetStart);
 
-    // Benchmark next run
-    ///TODO: same comment on benchmarking as above applies
+    if (doBenchmark) {
+        instructionList.push_back(std::make_shared<pfacesInstruction>());
+        instructionList.back()->setAsBlockingSyncPoint();
+
+        instr_hostFuncBenchmarkNext->setAsHostFunction(pfacesKernel_mono_synth::benchmarkNext, "benchmarkNext");
+        instructionList.push_back(instr_hostFuncBenchmarkNext);
+
+        instructionList.push_back(std::make_shared<pfacesInstruction>());
+        instructionList.back()->setAsBlockingSyncPoint();
+
+        instr_jumpToBenchmarkStart->setAsJumpNe(benchmark_loop_start);
+        instructionList.push_back(instr_jumpToBenchmarkStart);
+    }
+    
+    // Build bitmap on GPU after synthesis converges
+    //   1. prepareBitmapGPU: write final basis_list_size to pool buffer
+    //   2. writeBasisList + writeBasisListSize: transfer final basis to device
+    //   3. exec build_bitmap: GPU kernel computes downward closure
+    //   4. readBitmap: transfer bitmap from device to host
+    //   5. copyBitmapFromGPU: convert int* to uint8_t vector
     instructionList.push_back(std::make_shared<pfacesInstruction>());
     instructionList.back()->setAsBlockingSyncPoint();
 
-    instr_hostFuncBenchmarkNext->setAsHostFunction(pfacesKernel_mono_synth::benchmarkNext, "benchmarkNext");
-    instructionList.push_back(instr_hostFuncBenchmarkNext);
-    
+    instr_hostFuncPrepareBitmapGPU->setAsHostFunction(pfacesKernel_mono_synth::prepareBitmapGPU, "prepareBitmapGPU");
+    instructionList.push_back(instr_hostFuncPrepareBitmapGPU);
+    instructionList.push_back(instr_writeBasisList);
+    instructionList.push_back(instr_writeBasisListSize);
+
     instructionList.push_back(std::make_shared<pfacesInstruction>());
     instructionList.back()->setAsBlockingSyncPoint();
 
-    instr_jumpToBenchmarkStart->setAsJumpNe(benchmark_loop_start);
-    instructionList.push_back(instr_jumpToBenchmarkStart);
-    
+    for (auto& job : job_execBuildBitmap) {
+        auto instr = std::make_shared<pfacesInstruction>();
+        instr->setAsDeviceExecute(job);
+        instructionList.push_back(instr);
+    }
+
+    instructionList.push_back(instr_readBitmap);
+
+    instructionList.push_back(std::make_shared<pfacesInstruction>());
+    instructionList.back()->setAsBlockingSyncPoint();
+
+    instr_hostFuncCopyBitmapFromGPU->setAsHostFunction(pfacesKernel_mono_synth::copyBitmapFromGPU, "copyBitmapFromGPU");
+    instructionList.push_back(instr_hostFuncCopyBitmapFromGPU);
+
     instructionList.push_back(std::make_shared<pfacesInstruction>());
     instructionList.back()->setAsBlockingSyncPoint();
 	
@@ -390,8 +461,10 @@ size_t pfacesKernel_mono_synth::initSafeSet(void* pPackedKernel, void* pPackedPa
     pKernel->m_ss_dim = pKernel->m_spCfg->getSsDim();
     
     // Assign pointers directly from the data pool
-    pKernel->m_safe_set_flat_indices = (int*)pParallelProgram->m_dataPool[1].first;
-    pKernel->m_safe_set_basis = (int*)pParallelProgram->m_dataPool[2].first;
+    // Note: Pool[0]=next_state_table, Pool[1]=runtime_params,
+    //   Pool[2]=basis_flat_idx, Pool[3]=basis_list, Pool[4]=basis_list_size, Pool[5]=unsafe_flags
+    pKernel->m_safe_set_flat_indices = (int*)pParallelProgram->m_dataPool[2].first;
+    pKernel->m_safe_set_basis = (int*)pParallelProgram->m_dataPool[3].first;
     
     if (!pKernel->m_safe_set_flat_indices || !pKernel->m_safe_set_basis) {
         std::cerr << "[MonoSynth] Error: Null pointer in dataPool!" << std::endl;
@@ -427,7 +500,7 @@ size_t pfacesKernel_mono_synth::prepareSafeSetIteration(void* pPackedKernel, voi
 
     pKernel->m_iterations++;
 
-    int* pBasisListSize = (int*)pParallelProgram->m_dataPool[3].first;
+    int* pBasisListSize = (int*)pParallelProgram->m_dataPool[4].first;
     if (pBasisListSize) {
         *pBasisListSize = pKernel->m_safe_set_size;
     }
@@ -457,7 +530,7 @@ size_t pfacesKernel_mono_synth::processSafeSetUpdate(void* pPackedKernel, void* 
     pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
     pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
     
-    int* pUnsafeFlags = (int*)pParallelProgram->m_dataPool[4].first;
+    int* pUnsafeFlags = (int*)pParallelProgram->m_dataPool[5].first;
     int added = pKernel->updateSafeSet(pUnsafeFlags);
 
     if (added == 0) {
@@ -640,6 +713,86 @@ void pfacesKernel_mono_synth::rebuildCoordIndex() {
             }
         }
     }
+}
+
+/* Prepare data for GPU bitmap kernel — called as host function before GPU exec */
+size_t pfacesKernel_mono_synth::prepareBitmapGPU(void* pPackedKernel, void* pPackedParallelProgram) {
+    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
+    pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
+    
+    // Write final basis size to pool buffer so it gets transferred to device
+    int* pBasisListSize = (int*)pParallelProgram->m_dataPool[4].first;
+    if (pBasisListSize) {
+        *pBasisListSize = pKernel->m_safe_set_size;
+    }
+    
+    return 0;
+}
+
+/* Copy GPU bitmap buffer to host m_bitmap vector — called after GPU exec + read-back */
+/* Remaps from kernel convention (column-major, 1-based, priority-reversed) to
+   safe_set.h convention (row-major, 0-based, no priority reversal) */
+size_t pfacesKernel_mono_synth::copyBitmapFromGPU(void* pPackedKernel, void* pPackedParallelProgram) {
+    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
+    pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
+    
+    const int total = (int)pKernel->x_flat_width;
+    const int n_dim = pKernel->m_ss_dim;
+    const auto& widths = pKernel->X_widthPerDimension;
+    auto priorities = pKernel->m_spCfg->getSsPriorities();
+    
+    pKernel->m_bitmap.assign(total, 0);
+    
+    // GPU bitmap is int* (pool[BITMAP_DATA_POOL_IDX]) in kernel convention
+    const int* gpuBitmap = (const int*)pParallelProgram->m_dataPool[BITMAP_DATA_POOL_IDX].first;
+    
+    // Precompute row-major strides for safe_set.h convention
+    std::vector<int> row_strides(n_dim);
+    row_strides[n_dim - 1] = 1;
+    for (int d = n_dim - 2; d >= 0; --d) {
+        row_strides[d] = row_strides[d + 1] * (int)widths[d + 1];
+    }
+    
+    int safe_count = 0;
+    std::vector<int> kernel_idx(n_dim, 0);
+    std::vector<int> ss_idx(n_dim, 0);
+    for (int kf = 0; kf < total; ++kf) {
+        if (!gpuBitmap[kf]) continue;
+        
+        // 1. Unflatten in column-major, 1-based (dim 0 fastest)
+        int temp = kf;
+        for (int d = 0; d < n_dim; ++d) {
+            kernel_idx[d] = (temp % (int)widths[d]) + 1;  // 1-based
+            temp /= (int)widths[d];
+        }
+        
+        // 2. Convert to safe_set 0-based index (reverse priority 0 dims)
+        for (int d = 0; d < n_dim; ++d) {
+            if (d < (int)priorities.size() && priorities[d] == 0) {
+                // priority 0: kernel idx=1 → x_max → safe_set idx=sizes[d]-1
+                ss_idx[d] = (int)widths[d] - kernel_idx[d];
+            } else {
+                // priority 1: kernel idx=1 → x_min → safe_set idx=0
+                ss_idx[d] = kernel_idx[d] - 1;
+            }
+        }
+        
+        // 3. Flatten in row-major (last dim fastest)
+        int sf = 0;
+        for (int d = 0; d < n_dim; ++d) {
+            sf += ss_idx[d] * row_strides[d];
+        }
+        
+        if (sf >= 0 && sf < total) {
+            pKernel->m_bitmap[sf] = 1;
+            safe_count++;
+        }
+    }
+    
+    std::cout << "[MonoSynth] GPU Bitmap: " << safe_count << "/" << total 
+              << " safe cells (" << (100.0 * safe_count / total) << "%)" << std::endl;
+    
+    return 0;
 }
 
 /* not providing implementation of the virtual method: configureTuneParallelProgram*/

@@ -1,0 +1,19 @@
+build_bitmap {
+    bitmap {
+        MemConfig = "pfaces_rw_global";
+        directionWriteOrRead = "true";
+        HostDoRead = "true";
+    }
+    basis_list {
+        MemConfig = "pfaces_rw_global";
+        isNewOrResident = "false";
+        residentFuncIdx = "1";
+        residentFuncArgIdx = "2";
+    }
+    basis_list_size_ptr {
+        MemConfig = "pfaces_rw_global";
+        isNewOrResident = "false";
+        residentFuncIdx = "1";
+        residentFuncArgIdx = "3";
+    }
+}

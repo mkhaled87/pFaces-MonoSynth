@@ -21,7 +21,7 @@ public:
 private:
 	// Member variables
 	std::string m_defaults;
-	const char* m_schema[802];
+	const char* m_schema[809];
 	static defaultConfiguration s_singleton;
 };
 
