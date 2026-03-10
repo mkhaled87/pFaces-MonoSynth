@@ -1,0 +1,12 @@
+# Build output
+build/
+
+# Experiment outputs (per-run directories)
+experiments/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
