@@ -29,6 +29,27 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILD_DIR="$RT_DIR/build"
 
+# Prefer local Conda packages and common Linux OpenCL locations when available
+CMAKE_ARGS=(
+    -DCMAKE_BUILD_TYPE=Release
+    -DUSE_PFACES_SDK=ON
+)
+if [[ -n "${CONDA_PREFIX:-}" ]]; then
+    CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=$CONDA_PREFIX")
+fi
+if [[ -z "${OpenCL_LIBRARY:-}" ]]; then
+    for candidate in \
+        /lib/x86_64-linux-gnu/libOpenCL.so.1 \
+        /usr/lib/x86_64-linux-gnu/libOpenCL.so.1 \
+        /usr/local/cuda/targets/x86_64-linux/lib/libOpenCL.so.1
+    do
+        if [[ -f "$candidate" ]]; then
+            CMAKE_ARGS+=("-DOpenCL_LIBRARY=$candidate")
+            break
+        fi
+    done
+fi
+
 # Number of parallel jobs
 JOBS="$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
 
@@ -57,8 +78,8 @@ echo ""
 
 # ── 1. Build ──────────────────────────────────────────────────────
 echo "[1/5] Building rt_controller ..."
-cmake -S "$RT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
-      > /dev/null 2>&1 || cmake -S "$RT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release
+cmake -S "$RT_DIR" -B "$BUILD_DIR" "${CMAKE_ARGS[@]}" \
+      > /dev/null 2>&1 || cmake -S "$RT_DIR" -B "$BUILD_DIR" "${CMAKE_ARGS[@]}"
 cmake --build "$BUILD_DIR" -j"$JOBS" 2>&1 | tail -5
 echo "  ✓ Build complete"
 echo ""

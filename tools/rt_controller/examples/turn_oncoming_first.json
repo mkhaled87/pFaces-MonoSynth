@@ -1,5 +1,5 @@
 {
-    "cfg_file": "../../pFaces-MonoSynth/examples/turn_oncoming_first/turn_oncoming_first.cfg",
+    "cfg_file": "../../examples/turn_oncoming_first/turn_oncoming_first.cfg",
 
     "synthesis": {
         "mode": "direct",
@@ -28,7 +28,7 @@
         "duration": 15.0,
         "sampling_period": 0.5,
         "resynth_threshold": 0.5,
-        "resynth_policy": "threshold"
+        "resynth_policy": "always"
     },
 
     "sensor": {

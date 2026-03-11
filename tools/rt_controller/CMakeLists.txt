@@ -42,13 +42,37 @@ set(EIGEN_BUILD_DOC OFF CACHE INTERNAL "")
 set(EIGEN_BUILD_PKGCONFIG OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(eigen)
 
-# --- NLopt (system-installed, required by libmpc++) ---
-find_package(NLopt QUIET)
-if(NOT NLopt_FOUND)
-    find_library(NLOPT_LIB NAMES nlopt PATHS /opt/homebrew/lib /usr/local/lib)
-    find_path(NLOPT_INCLUDE NAMES nlopt.hpp PATHS /opt/homebrew/include /usr/local/include)
-    if(NOT NLOPT_LIB)
-        message(FATAL_ERROR "NLopt not found. Install with: brew install nlopt")
+# --- NLopt (required by libmpc++) ---
+# Prefer direct library/header discovery over imported targets because some
+# Conda NLopt packages ship broken transitive paths in their CMake config.
+set(_NLOPT_PREFIX_HINTS
+    "$ENV{CONDA_PREFIX}"
+    /usr
+    /usr/local
+    /opt/homebrew
+)
+
+find_library(NLOPT_LIB
+    NAMES nlopt
+    HINTS ${_NLOPT_PREFIX_HINTS}
+    PATH_SUFFIXES lib lib64
+)
+find_path(NLOPT_INCLUDE
+    NAMES nlopt.hpp nlopt.h
+    HINTS ${_NLOPT_PREFIX_HINTS}
+    PATH_SUFFIXES include
+)
+
+if(NLOPT_LIB AND NLOPT_INCLUDE)
+    set(NLOPT_FOUND TRUE)
+else()
+    find_package(NLopt QUIET)
+    if(NLopt_FOUND)
+        set(NLOPT_FOUND TRUE)
+    else()
+        message(FATAL_ERROR
+            "NLopt not found. Install it via Conda or your system package manager. "
+            "Examples: `conda install -c conda-forge nlopt` or `sudo apt install libnlopt-cxx-dev`.")
     endif()
 endif()
 
@@ -111,11 +135,11 @@ target_link_libraries(rt_controller PRIVATE
 target_include_directories(rt_controller PRIVATE ${LIBMPC_INCLUDE_DIR})
 
 # NLopt
-if(NLopt_FOUND)
-    target_link_libraries(rt_controller PRIVATE NLopt::nlopt)
-else()
+if(NLOPT_LIB AND NLOPT_INCLUDE)
     target_link_libraries(rt_controller PRIVATE ${NLOPT_LIB})
     target_include_directories(rt_controller PRIVATE ${NLOPT_INCLUDE})
+elseif(NLopt_FOUND)
+    target_link_libraries(rt_controller PRIVATE NLopt::nlopt)
 endif()
 
 # pFaces SDK (optional)
@@ -125,9 +149,12 @@ if(USE_PFACES_SDK AND PFACES_SDK_LIB)
     target_include_directories(rt_controller PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../../kernel-driver
     )
-    # OpenCL C++ headers (from parent project's FetchContent)
-    # Search common locations for the OpenCL-CLHPP headers
+    # OpenCL C++ headers. Prefer stable system/Conda headers before fetching:
+    # newer CLHPP snapshots can be incompatible with the installed pFaces SDK.
     set(OPENCL_HPP_CANDIDATES
+        "$ENV{CONDA_PREFIX}/include"
+        "/usr/include"
+        "/usr/local/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../build/openclhpp-src/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/../../pFaces-MonoSynth/build/openclhpp-src/include"
     )
@@ -160,6 +187,13 @@ if(USE_PFACES_SDK AND PFACES_SDK_LIB)
     if(APPLE)
         target_link_libraries(rt_controller PRIVATE "-framework OpenCL")
     else()
+        if(NOT OpenCL_LIBRARY)
+            find_library(OpenCL_LIBRARY
+                NAMES OpenCL libOpenCL.so.1
+                HINTS "$ENV{CONDA_PREFIX}" /usr /usr/local /lib /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu /usr/local/cuda
+                PATH_SUFFIXES lib lib64 targets/x86_64-linux/lib
+            )
+        endif()
         find_package(OpenCL REQUIRED)
         target_link_libraries(rt_controller PRIVATE OpenCL::OpenCL)
     endif()

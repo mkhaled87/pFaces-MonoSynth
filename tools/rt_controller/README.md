@@ -5,16 +5,19 @@ A general-purpose C++20 framework for **real-time safe control** using monotone 
 ## Quick Start
 
 ```bash
-# Build
-mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_PFACES_SDK=ON
-make -j$(sysctl -n hw.logicalcpu 2>/dev/null || nproc)
-cd ..
+# Install missing dependencies once (Linux/Conda example)
+conda install -y -c conda-forge nlopt pandas matplotlib numpy
 
-# Run an experiment (builds, runs, visualizes — all outputs in one folder)
+# Build + run the full pipeline
 ./scripts/run_experiment.sh examples/turn_ego_first.json
 
 # Or run manually:
+mkdir -p build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_PFACES_SDK=ON \
+  -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" \
+  -DOpenCL_LIBRARY=/lib/x86_64-linux-gnu/libOpenCL.so.1
+make -j$(sysctl -n hw.logicalcpu 2>/dev/null || nproc)
+cd ..
 ./build/rt_controller examples/turn_ego_first.json experiments/my_run
 python3 scripts/visualize.py experiments/my_run/sim_log.csv --save experiments/my_run
 ```
@@ -43,7 +46,7 @@ python3 scripts/visualize.py experiments/my_run/sim_log.csv --save experiments/m
 
 ```jsonc
 {
-  "cfg_file": "../../pFaces-MonoSynth/examples/turn_ego_first/turn_ego_first.cfg",
+  "cfg_file": "../../examples/turn_ego_first/turn_ego_first.cfg",
 
   "synthesis": {
     "mode": "direct",                    // "file" | "external" | "direct"
@@ -90,9 +93,9 @@ python3 scripts/visualize.py experiments/my_run/sim_log.csv --save experiments/m
 
 | Scenario | States | Input | Runtime Param | `.cfg` Location |
 |----------|--------|-------|---------------|-----------------|
-| `turn_ego_first` | s_ego, v_ego, s_onc | Torque (N·m) | v_oncoming | `pFaces-MonoSynth/examples/turn_ego_first/` |
-| `turn_oncoming_first` | s_ego, v_ego, s_onc | Torque (N·m) | v_oncoming | `pFaces-MonoSynth/examples/turn_oncoming_first/` |
-| `acc` | h, v_ego, v_lead | Accel (m/s²) | — | `pFaces-MonoSynth/examples/acc/` |
+| `turn_ego_first` | s_ego, v_ego, s_onc | Torque (N·m) | v_oncoming | `../../examples/turn_ego_first/` |
+| `turn_oncoming_first` | s_ego, v_ego, s_onc | Torque (N·m) | v_oncoming | `../../examples/turn_oncoming_first/` |
+| `acc` | h, v_ego, v_lead | Accel (m/s²) | — | `../../examples/acc/` |
 
 ## Running Experiments
 
@@ -222,7 +225,7 @@ Create `examples/my_scenario.json`:
 
 ```json
 {
-  "cfg_file": "../../pFaces-MonoSynth/examples/my_scenario/my_scenario.cfg",
+  "cfg_file": "../../examples/my_scenario/my_scenario.cfg",
   "synthesis": {
     "mode": "direct",
     "kernel_pack": "../../kernel-pack",
@@ -298,14 +301,34 @@ time,x0,x1,...,u0,...,param_value,is_safe,query_ns,synth_ms,ctrl_ms,basis_size,s
 
 ## Dependencies
 
+### Installation Notes
+
+On this Linux setup, the missing runtime/build dependencies were resolved with:
+
+```bash
+conda install -y -c conda-forge nlopt pandas matplotlib numpy
+```
+
+Why these were needed:
+- `nlopt` provides the optimizer used by `libmpc++` during the C++ build.
+- `pandas`, `matplotlib`, and `numpy` are required by `scripts/visualize.py`.
+
+If you use a system package manager instead of Conda, install the OpenCL and NLopt development packages as well. On Ubuntu, that typically means:
+
+```bash
+sudo apt install libnlopt-cxx-dev ocl-icd-opencl-dev
+pip install pandas matplotlib numpy
+```
+
 | Dependency | Required | Notes |
 |-----------|----------|-------|
 | C++20 compiler | Yes | GCC ≥10 / Clang ≥14 |
 | Eigen3 | Yes | FetchContent (auto) |
 | libmpc++ | Yes | FetchContent (auto) |
-| NLopt | Yes | `brew install nlopt` |
+| NLopt | Yes | `conda install -c conda-forge nlopt` or `sudo apt install libnlopt-cxx-dev` |
+| OpenCL loader/dev files | Yes for `direct` mode | `sudo apt install ocl-icd-opencl-dev` if CMake cannot find `libOpenCL` |
 | pFaces SDK | Optional | For `direct` synthesis mode |
-| Python 3.8+ | For viz | `pip install matplotlib pandas numpy` |
+| Python 3.8+ | For viz | `conda install pandas matplotlib numpy` or `pip install matplotlib pandas numpy` |
 
 ## Project Structure
 

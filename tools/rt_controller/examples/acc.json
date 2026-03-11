@@ -1,5 +1,5 @@
 {
-    "cfg_file": "../../pFaces-MonoSynth/examples/acc/acc.cfg",
+    "cfg_file": "../../examples/acc/acc.cfg",
 
     "synthesis": {
         "mode": "direct",
