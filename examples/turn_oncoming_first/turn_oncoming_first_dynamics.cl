@@ -1,11 +1,18 @@
 /**
- * Turn Ego First - User Dynamics
+ * Turn Oncoming First - User Dynamics
  * 
  * System:
- *   State: [s, v, s0] (ego position, ego velocity, oncoming position)
+ *   State: [s_ego, v_ego, s_onc] (ego position, ego velocity, oncoming position)
  *   Input: [T_ego]    (ego braking/acceleration torque)
  * 
- * Goal: Cross intersection safely before oncoming vehicle
+ * Goal: Ego WAITS for the oncoming vehicle to pass before crossing.
+ *
+ * Priority ordering: priorities = {1, 1, 0}
+ *   - s_ego:  priority 1 -> min is good (ego stays back / yields)
+ *   - v_ego:  priority 1 -> min is good (ego slows down)
+ *   - s_onc:  priority 0 -> max is good (oncoming passes faster)
+ *
+ * Runtime parameter: V0_MIN (minimum oncoming velocity, worst case = slow).
  */
 
 // ============================================================================
@@ -26,7 +33,7 @@
 #define GAMMA_MAX 0.65f
 #define V_MIN 0.0f
 #define V_MAX 12.0f
-#define V0_MAX 12.0f
+#define V0_MIN 8.0f
 #define COLLISION_ZONE_WIDTH 10.0f
 
 // Bounds (must match .cfg)
@@ -49,15 +56,15 @@ inline int get_zone(float s) {
 inline bool is_safe_condition(float s_ego, float s_oncoming) {
     int ego_zone = get_zone(s_ego);
     int oncoming_zone = get_zone(s_oncoming);
-    // Ego First: unsafe if oncoming cuts in front (ego_zone < oncoming_zone) 
-    // or both in intersection (ego_zone == 2 && oncoming_zone == 2)
-    return !((ego_zone < oncoming_zone) || (ego_zone == 2 && oncoming_zone == 2));
+    // Oncoming First: unsafe if ego enters intersection before oncoming has passed.
+    // Safe when: oncoming is ahead (zone >= ego zone) OR oncoming has cleared (zone 3)
+    // while ego hasn't entered (zone 1).
+    return !((oncoming_zone < ego_zone) || (ego_zone == 2 && oncoming_zone == 2));
 }
 
 inline void get_worst_case_inputs(const float* x, float* u, float* w) {
-    // MATLAB v3 convention: with priority 0, index 1 corresponds to x_max.
-    // For the ego-first scenario, the safest input is maximum acceleration.
-    u[0] = T_MAX; 
+    // For the "wait" scenario, the safest input is maximum braking.
+    u[0] = T_MIN;
 }
 
 inline float compute_vehicle_accel(float v, float T) {
@@ -74,36 +81,33 @@ inline float compute_vehicle_accel(float v, float T) {
 }
 
 inline void ode_rhs(const float* x, const float* u, const float* w, float* dxdt, const float* rt_params) {
-    // Use runtime V0_MAX if provided (rt_params[0] > 0), else compile-time default.
-    float v0_max = (rt_params[0] > 0.0f) ? rt_params[0] : V0_MAX;
+    // Use runtime V0_MIN if provided, else compile-time default.
+    float v0_min = (rt_params[0] >= 0.0f) ? rt_params[0] : V0_MIN;
 
-    // Check if goal reached (self-loop logic)
-    // Goal is Zone 3 (s > 10). 
-    // But since s_max is 10, we loop at s == 10.
-    if (is_safe_condition(x[0], x[2]) && x[0] >= 10.0f) {
+    // Self-loop: when oncoming has passed (zone 3) AND ego is safely before
+    // the intersection (zone 1), the goal is reached -- ego waited successfully.
+    if (is_safe_condition(x[0], x[2]) && get_zone(x[2]) >= 3) {
         dxdt[0] = 0.0f;
         dxdt[1] = 0.0f;
         dxdt[2] = 0.0f;
         return;
     }
 
-    dxdt[0] = x[1]; // ds/dt = v
+    dxdt[0] = x[1]; // ds_ego/dt = v_ego
     dxdt[1] = compute_vehicle_accel(x[1], u[0]);
-    dxdt[2] = v0_max; // ds0/dt = v0_max (runtime parameter)
+    dxdt[2] = v0_min; // ds_onc/dt = v0_min (runtime parameter, worst case = slow)
 }
 
 inline void apply_state_constraints(float* x) {
     x[1] = fmax(V_MIN, fmin(x[1], V_MAX));
     
     if (!is_safe_condition(x[0], x[2])) {
-        // Map to an unsafe state (outside bounds)
-        // Push toward less-safe direction for priorities (0,0,1)
-        // s_ego, v_ego: max-good -> lower is worse; s_onc: min-good -> higher is worse
-        x[0] = -100.0f;
-        x[1] = 0.0f;
-        x[2] = 100.0f;
+        // Map to an unsafe state (outside bounds) -- for "wait" scenario,
+        // match the anti-priority: push ego far forward, oncoming far back
+        x[0] = 100.0f; 
+        x[1] = 20.0f;
+        x[2] = -100.0f;
     } else {
-        // Clamping to boundaries to prevent safe paths falling off the grid
         x[0] = fmax(S_MIN, fmin(x[0], S_MAX));
         x[2] = fmax(S0_MIN, fmin(x[2], S0_MAX));
     }
