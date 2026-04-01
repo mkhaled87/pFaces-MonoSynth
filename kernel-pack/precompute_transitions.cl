@@ -2,16 +2,18 @@
 * precompute_transitions.cl
 *
 *  date    : 20.01.2026
-*  about   : Soon.
+*  about   : Generic N-D worst-case transition kernel for monotone synthesis.
 * ***********************************************************************
 */
 
-
 /**
- * Generic N-Dimensional Worst-Case Transition Kernel (pFaces)
- * 
- * This is a template that includes user-defined dynamics.
- * All configuration is provided via compile-time defines and user dynamics file.
+ * Convention: 1-based internal monotone coordinates with dim 0 fastest.
+ *   For priority 0 (max-good): idx = 1 maps to x_max, idx = N maps to x_min.
+ *   For priority 1 (min-good): idx = 1 maps to x_min, idx = N maps to x_max.
+ *   flat = (idx[0]-1) + (idx[1]-1)*N0 + ...  (column-major, dim 0 fastest)
+ *
+ * This matches the pFaces basis iteration, which always expands toward
+ * smaller internal indices.
  */
 
 // ============================================================================
@@ -59,7 +61,7 @@ inline void rk4_step(const float* x, const float* u, const float* w,
 }
 
 // ============================================================================
-// GENERIC INDEX MAPPING (Priority-aware)
+// INDEX MAPPING: 1-based internal monotone coordinates, dim 0 fastest
 // ============================================================================
 
 inline void unflatten_index(int flat_idx, const unsigned int* dims, int* idx) {
@@ -70,15 +72,17 @@ inline void unflatten_index(int flat_idx, const unsigned int* dims, int* idx) {
 }
 
 inline void idx_to_state(const int* idx,
-                         const float* x_min,
                          const float* x_max,
-                         const float* x_res,
+                         const float* x_min,
                          const int* x_priority,
+                         const float* x_res,
                          float* x) {
     for (int i = 0; i < @@STATE_DIM@@; ++i) {
-        x[i] = (x_priority[i] == 1)
-               ? x_min[i] + (idx[i] - 1) * x_res[i]
-               : x_max[i] - (idx[i] - 1) * x_res[i];
+        if (x_priority[i] == 0) {
+            x[i] = x_max[i] - (idx[i] - 1) * x_res[i];
+        } else {
+            x[i] = x_min[i] + (idx[i] - 1) * x_res[i];
+        }
     }
 }
 
@@ -98,16 +102,19 @@ inline bool state_to_idx(const float* x,
         }
         
         float v = fmax(x_min[i], fmin(x[i], x_max[i]));
-        float q = (x_priority[i] == 1)
-                   ? (v - x_min[i]) / x_res[i] - 1e-5f
-                   : (x_max[i] - v) / x_res[i] - 1e-5f;
-        idx[i] = max(1, min((int)ceil(q) + 1, (int)x_numCells[i]));
+        float q;
+        if (x_priority[i] == 0) {
+            q = (x_max[i] - v) / x_res[i];
+        } else {
+            q = (v - x_min[i]) / x_res[i];
+        }
+        idx[i] = min((int)ceil(q - 1e-5f) + 1, (int)x_numCells[i]);
     }
     return true;
 }
 
 // ============================================================================
-// MAIN KERNEL (Generic - don't edit)
+// MAIN KERNEL
 // ============================================================================
 
 __kernel void precompute_transitions(
@@ -116,47 +123,38 @@ __kernel void precompute_transitions(
 ) {
     int gid = get_global_id(0);
     
-    // Read runtime parameters to private memory for fast access
     float rt_params[4];
-    rt_params[0] = runtime_params[0]; // V0_MAX (0 = use compile-time default)
-    rt_params[1] = runtime_params[1]; // reserved
-    rt_params[2] = runtime_params[2]; // reserved
-    rt_params[3] = runtime_params[3]; // reserved
+    rt_params[0] = runtime_params[0];
+    rt_params[1] = runtime_params[1];
+    rt_params[2] = runtime_params[2];
+    rt_params[3] = runtime_params[3];
     
-    // State space configuration (from pFaces placeholders)
     const float x_min[@@STATE_DIM@@] = @@X_MIN_ARRAY@@;
     const float x_max[@@STATE_DIM@@] = @@X_MAX_ARRAY@@;
     const float x_res[@@STATE_DIM@@] = @@X_RES_ARRAY@@;
     const int x_priority[@@STATE_DIM@@] = @@X_PRIORITY_ARRAY@@;
     
-    // Compute grid dimensions
     unsigned int x_numCells[@@STATE_DIM@@];
     for (int i = 0; i < @@STATE_DIM@@; ++i) {
         x_numCells[i] = (unsigned int)ceil((x_max[i] - x_min[i]) / x_res[i]) + 1;
     }
     
-    // Current state indices
     int x_idx[@@STATE_DIM@@];
     unflatten_index(gid, x_numCells, x_idx);
     
-    // Current state values
     float x[@@STATE_DIM@@];
-    idx_to_state(x_idx, x_min, x_max, x_res, x_priority, x);
+    idx_to_state(x_idx, x_max, x_min, x_priority, x_res, x);
     
-    // Worst-case inputs
     float u[@@INPUT_DIM@@], w[@@DISTURB_DIM@@];
     get_worst_case_inputs(x, u, w);
     
-    // Next state via RK4 integration
     float x_plus[@@STATE_DIM@@];
     rk4_step(x, u, w, @@SAMPLING_TIME@@, x_plus, rt_params);
     
-    // Next state indices (with bounds checking)
     int x_plus_idx[@@STATE_DIM@@];
     for (int i = 0; i < @@STATE_DIM@@; ++i) x_plus_idx[i] = -1;
     state_to_idx(x_plus, x_min, x_max, x_res, x_priority, x_numCells, x_plus_idx);
     
-    // Write result (pFaces format: flat_idx * STATE_DIM + dimension)
     int base = gid * @@STATE_DIM@@;
     for (int i = 0; i < @@STATE_DIM@@; ++i) {
         next_state_table[base + i] = (unsigned int)x_plus_idx[i];

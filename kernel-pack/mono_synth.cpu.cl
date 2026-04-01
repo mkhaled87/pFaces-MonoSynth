@@ -15,3 +15,6 @@
 
 // pFaces-Including a KERNEL-Function: build_bitmap
 @pfaces-include:"build_bitmap.cl"
+
+// pFaces-Including KERNEL-Functions: tt_only_column_update + tt_only_prefix_max
+@pfaces-include:"tt_only_iterate.cl"

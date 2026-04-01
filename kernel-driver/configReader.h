@@ -21,7 +21,7 @@ public:
 private:
 	// Member variables
 	std::string m_defaults;
-	const char* m_schema[809];
+	const char* m_schema[814];
 	static defaultConfiguration s_singleton;
 };
 
@@ -41,6 +41,12 @@ class configReader {
 	bool            m_save_transitions;
 	bool            m_save_controller;
 	bool            m_record_basis_evolution;
+	bool            m_boundary_seeding;
+	bool            m_use_threshold_table;
+	bool            m_use_tt_only;
+	bool            m_use_tt_only_gpu;
+	bool            m_use_inline_dynamics;
+	size_t          m_benchmark_count;
 
 	bool			m_hasTarget;
 	size_t			m_targetCount;
@@ -157,6 +163,12 @@ public:
 	inline bool isSaveTransitions() const { return m_save_transitions; }
 	inline bool isSaveController() const { return m_save_controller; }
 	inline bool isRecordBasisEvolution() const { return m_record_basis_evolution; }
+	inline bool isBoundarySeeding() const { return m_boundary_seeding; }
+	inline bool isUseThresholdTable() const { return m_use_threshold_table; }
+	inline bool isUseTTOnly() const { return m_use_tt_only; }
+	inline bool isUseTTOnlyGPU() const { return m_use_tt_only_gpu; }
+	inline bool isUseInlineDynamics() const { return m_use_inline_dynamics; }
+	inline size_t getBenchmarkCount() const { return m_benchmark_count; }
 
 	inline bool isHasTarget() const { return m_hasTarget; }
 	inline bool isHasSafe() const { return m_hasSafe; }

@@ -1,0 +1,12 @@
+tt_only_prefix_max {
+    threshold_table {
+        MemConfig = "pfaces_rw_global";
+        isNewOrResident = "false";
+        residentFuncIdx = "3";
+        residentFuncArgIdx = "2";
+    }
+    sweep_params {
+        MemConfig = "pfaces_rw_global";
+        HostDoWrite = "true";
+    }
+}

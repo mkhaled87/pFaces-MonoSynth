@@ -814,7 +814,12 @@ defaultConfiguration::defaultConfiguration()
 	m_schema[805] = "max_basis_elements = int";
 	m_schema[806] = "record_basis_evolution = boolean";
 	m_schema[807] = "states.priorities = string";
-	m_schema[808] = 0;
+	m_schema[808] = "boundary_seeding = boolean";
+	m_schema[809] = "benchmark_count = int";
+	m_schema[810] = "use_threshold_table = boolean";
+	m_schema[811] = "use_tt_only = boolean";
+	m_schema[812] = "use_inline_dynamics = boolean";
+	m_schema[813] = 0;
 
 
 	std::stringstream m_str;
@@ -873,6 +878,11 @@ defaultConfiguration::defaultConfiguration()
 	m_str << "ode_steps = \"100\";\n";
 	m_str << "max_basis_elements = \"10000\";\n";
 	m_str << "record_basis_evolution = \"false\";\n";
+	m_str << "boundary_seeding = \"false\";\n";
+	m_str << "benchmark_count = \"10\";\n";
+	m_str << "use_threshold_table = \"true\";\n";
+	m_str << "use_tt_only = \"false\";\n";
+	m_str << "use_inline_dynamics = \"false\";\n";
 	m_str << "\n";
 	m_str << "\n";
 	m_str << "# State/Input sets\n";
@@ -1553,6 +1563,36 @@ void configReader::load_values() {
 			m_record_basis_evolution = false;
 		}
 
+		try {
+			m_boundary_seeding = m_spConfigObject->readConfigValueBool("boundary_seeding");
+		} catch (...) {
+			m_boundary_seeding = false;
+		}
+
+		try {
+			m_use_threshold_table = m_spConfigObject->readConfigValueBool("use_threshold_table");
+		} catch (...) {
+			m_use_threshold_table = true;
+		}
+
+		try {
+			m_use_tt_only = m_spConfigObject->readConfigValueBool("use_tt_only");
+		} catch (...) {
+			m_use_tt_only = false;
+		}
+
+		try {
+			m_use_tt_only_gpu = m_spConfigObject->readConfigValueBool("use_tt_only_gpu");
+		} catch (...) {
+			m_use_tt_only_gpu = true;  // default: GPU when use_tt_only is set
+		}
+
+		try {
+			m_use_inline_dynamics = m_spConfigObject->readConfigValueBool("use_inline_dynamics");
+		} catch (...) {
+			m_use_inline_dynamics = false;
+		}
+
 		m_statedim = m_spConfigObject->readConfigValueInt("states.dim");
 		m_stateeta = m_spConfigObject->readConfigValueString("states.eta");
 		m_statelb = m_spConfigObject->readConfigValueString("states.lb");
@@ -1609,6 +1649,12 @@ void configReader::load_values() {
 			m_max_basis_elements = m_spConfigObject->readConfigValueInt("max_basis_elements");
 		} catch (...) {
 			m_max_basis_elements = 2000;
+		}
+
+		try {
+			m_benchmark_count = m_spConfigObject->readConfigValueInt("benchmark_count");
+		} catch (...) {
+			m_benchmark_count = 10;
 		}
 
 		// reading the extra include file

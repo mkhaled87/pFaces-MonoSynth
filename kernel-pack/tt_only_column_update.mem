@@ -1,0 +1,29 @@
+tt_only_column_update {
+    next_state_table {
+        MemConfig = "pfaces_rw_global";
+        isNewOrResident = "false";
+        residentFuncIdx = "0";
+        residentFuncArgIdx = "0";
+    }
+    threshold_table_in {
+        MemConfig = "pfaces_rw_global";
+        HostDoWrite = "true";
+        HostDoRead = "true";
+    }
+    threshold_table_out {
+        MemConfig = "pfaces_rw_global";
+        directionWriteOrRead = "true";
+        HostDoRead = "true";
+    }
+    changed_flag {
+        MemConfig = "pfaces_rw_global";
+        HostDoWrite = "true";
+        HostDoRead = "true";
+    }
+    runtime_params {
+        MemConfig = "pfaces_rw_global";
+        isNewOrResident = "false";
+        residentFuncIdx = "0";
+        residentFuncArgIdx = "1";
+    }
+}
