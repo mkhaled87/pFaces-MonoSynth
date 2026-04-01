@@ -99,6 +99,10 @@ KNOWN_LABELS: dict[str, dict[str, list[str]]] = {
         "states": ["Gap (m)", "$v_{ego}$ (m/s)", "$v_{lead}$ (m/s)"],
         "inputs": ["Accel ($m/s^2$)"],
     },
+    "two_oncoming": {
+        "states": ["$s_{ego}$ (m)", "$v_{ego}$ (m/s)", "$s_{onc1}$ (m)", "$s_{onc2}$ (m)"],
+        "inputs": ["Torque (N·m)"],
+    },
 }
 
 
@@ -107,10 +111,31 @@ def load_log(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     # Derive convenience columns
     df["is_safe_bool"] = df["is_safe"].astype(bool)
+    used_dual_fallback = False
+    if "wait_safe" not in df.columns:
+        df["wait_safe"] = df["is_safe"]
+        used_dual_fallback = True
+    if "go_safe" not in df.columns:
+        df["go_safe"] = df["is_safe"]
+        used_dual_fallback = True
+    df["wait_safe_bool"] = df["wait_safe"].astype(bool)
+    df["go_safe_bool"] = df["go_safe"].astype(bool)
+    # 0=unsafe, 1=safe-wait-only, 2=safe-go-only, 3=safe-both
+    df["safety_cat"] = (
+        df["wait_safe_bool"].astype(int)
+        + 2 * df["go_safe_bool"].astype(int)
+    )
+    if used_dual_fallback:
+        print("[visualize] warning: wait_safe/go_safe missing in log; using is_safe fallback for 4-category view")
     df["ctrl_us"] = df["ctrl_ms"] * 1000  # µs
     df["query_us"] = df["query_ns"] / 1000  # µs
     # Mark resynthesis events (synth_ms > 0)
     df["resynth"] = df["synth_ms"] > 0
+    # Separate wait/go synthesis times (dual mode)
+    if "synth_wait_ms" not in df.columns:
+        df["synth_wait_ms"] = 0.0
+    if "synth_go_ms" not in df.columns:
+        df["synth_go_ms"] = 0.0
     # Measured parameter (0.0 if scenario has no runtime param)
     if "param_value" not in df.columns:
         df["param_value"] = 0.0
@@ -189,6 +214,21 @@ def plot_states(df: pd.DataFrame, x_cols: list[str], s_lab: list[str],
         _shade_safety(ax, t, is_safe)
 
         ax.plot(t, x, color=c, linewidth=1.8, zorder=5)
+
+        # For dim 0 (s_ego): overlay safe range bounds
+        if i == 0 and "safe_s_lo" in df.columns and "safe_s_hi" in df.columns:
+            lo = df["safe_s_lo"].values
+            hi = df["safe_s_hi"].values
+            valid = np.isfinite(lo) & np.isfinite(hi)
+            if valid.any():
+                ax.fill_between(t, lo, hi, where=valid,
+                                color=COLORS["safe"], alpha=0.12,
+                                step="post", zorder=2, label="Safe range")
+                ax.plot(t[valid], lo[valid], color=COLORS["safe"],
+                        linewidth=1.0, alpha=0.5, linestyle="--", zorder=3)
+                ax.plot(t[valid], hi[valid], color=COLORS["safe"],
+                        linewidth=1.0, alpha=0.5, linestyle="--", zorder=3)
+
         ax.set_ylabel(s_lab[i] if i < len(s_lab) else col, fontsize=11)
         ax.tick_params(labelsize=9)
 
@@ -320,7 +360,7 @@ def plot_phase(df: pd.DataFrame, x_cols: list[str], s_lab: list[str],
 def plot_timing(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> None:
     """
     Stacked-bar computation-time breakdown per timestep.
-    Blue = controller solve time; orange = synthesis (basis) time.
+    Blue = controller solve time; orange = wait synthesis; purple = go synthesis.
     Background shading indicates safety status at each step.
     """
     import matplotlib.pyplot as plt
@@ -328,10 +368,13 @@ def plot_timing(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> None:
     t        = df["time"].values
     ctrl_ms  = df["ctrl_ms"].values
     synth_ms = df["synth_ms"].values
+    synth_wait_ms = df["synth_wait_ms"].values
+    synth_go_ms   = df["synth_go_ms"].values
     is_safe  = df["is_safe_bool"].values
     n        = len(t)
     dt       = (t[1] - t[0]) if n > 1 else 0.5
     bar_w    = dt * 0.75
+    has_dual = synth_wait_ms.sum() > 0 or synth_go_ms.sum() > 0
 
     fig, ax = plt.subplots(figsize=(14, 5), facecolor="white")
 
@@ -344,8 +387,15 @@ def plot_timing(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> None:
     # Stacked bars: controller (bottom) + synthesis (top)
     ax.bar(t, ctrl_ms,  width=bar_w, color="#2980b9", alpha=0.88,
            label="Controller", zorder=5)
-    ax.bar(t, synth_ms, width=bar_w, bottom=ctrl_ms,
-           color="#e67e22", alpha=0.88, label="Synthesis (basis)", zorder=5)
+    if has_dual:
+        # Separate wait and go synthesis bars with different colors
+        ax.bar(t, synth_wait_ms, width=bar_w, bottom=ctrl_ms,
+               color="#e67e22", alpha=0.88, label="Synthesis (wait)", zorder=5)
+        ax.bar(t, synth_go_ms, width=bar_w, bottom=ctrl_ms + synth_wait_ms,
+               color="#8E44AD", alpha=0.88, label="Synthesis (go)", zorder=5)
+    else:
+        ax.bar(t, synth_ms, width=bar_w, bottom=ctrl_ms,
+               color="#e67e22", alpha=0.88, label="Synthesis", zorder=5)
 
     # Mean ctrl time line
     mean_ctrl = ctrl_ms.mean()
@@ -588,10 +638,16 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
     u_ctrl   = df["u0"].values
     v_onc    = df["param_value"].values
     is_safe  = df["is_safe_bool"].values
+    wait_safe = df["wait_safe_bool"].values if "wait_safe_bool" in df.columns else is_safe
+    go_safe = df["go_safe_bool"].values if "go_safe_bool" in df.columns else is_safe
+    safety_cat = df["safety_cat"].values if "safety_cat" in df.columns else (is_safe.astype(int) * 3)
     times    = df["time"].values
     basis    = df["basis_size"].values
     ctrl_ms  = df["ctrl_ms"].values
     synth_ms = df["synth_ms"].values
+    synth_wait_ms = df["synth_wait_ms"].values
+    synth_go_ms   = df["synth_go_ms"].values
+    has_dual_synth = synth_wait_ms.sum() > 0 or synth_go_ms.sum() > 0
     N        = len(times)
     dt       = times[1] - times[0] if N > 1 else 0.1
     safe_frac = df["safe_frac"].values if "safe_frac" in df.columns else np.full(N, np.nan)
@@ -599,6 +655,12 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
     safe_s_hi = df["safe_s_hi"].values if "safe_s_hi" in df.columns else np.full(N, np.nan)
     finite_lo = safe_s_lo[np.isfinite(safe_s_lo)]
     finite_hi = safe_s_hi[np.isfinite(safe_s_hi)]
+
+    # Vehicle 2 (two-oncoming scenario): detect from x3 column or legacy d_sep
+    has_vehicle_2 = len(x_cols) >= 4  # 4D state → independent vehicle positions
+    if has_vehicle_2:
+        s_onc_2 = df[x_cols[3]].values  # x3 = s_onc2 directly
+        v_onc_2 = df["param_value_2"].values if "param_value_2" in df.columns else v_onc
 
     # ── road geometry (physical metres) ───────────────────────────
     hw         = 4.0       # half-width: 8 m total road (2×2-lane)
@@ -662,6 +724,7 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
     onc_pts  = np.array([_onc_xy(s)      for s in s_onc])
     ego_hdgs = np.array([_ego_heading(s) for s in s_ego])
     guide    = np.array([_ego_xy(s)      for s in np.linspace(-42, 14, 600)])
+    onc2_pts = np.array([_onc_xy(s) for s in s_onc_2]) if has_vehicle_2 else None
     path_s_min = min(float(np.nanmin(finite_lo)) if finite_lo.size else float(np.min(s_ego)),
                      float(np.min(s_ego)), -50.0)
     path_s_max = max(float(np.nanmax(finite_hi)) if finite_hi.size else float(np.max(s_ego)),
@@ -670,8 +733,9 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
     # ── fixed limits for time-series subplots ─────────────────────
     tp   = dt * 0.5
     TL   = (times[0] - tp, times[-1] + tp)
-    VVL  = (min(v_ego.min(), v_onc.min()) - 0.5,
-            max(v_ego.max(), v_onc.max()) + 0.5)
+    v_all = [v_ego, v_onc] + ([v_onc_2] if has_vehicle_2 else [])
+    VVL  = (min(v.min() for v in v_all) - 0.5,
+            max(v.max() for v in v_all) + 0.5)
     BL   = (basis.min() * 0.82,  basis.max() * 1.18)
     safe_pct = safe_frac * 100.0
     safe_pct_valid = safe_pct[~np.isnan(safe_pct)]
@@ -691,11 +755,24 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
         "safe":  "#1E8449",
         "unsafe":"#C0392B",
         "onc":   "#E67E22",
+        "onc2":  "#8E44AD",
         "ctrl":  "#2980B9",
         "synth": "#E67E22",
         "vego":  "#2C3E50",
         "guide": "#AEB6BF",
         "txt":   "#1C2833",
+    }
+    CAT_COLOR = {
+        0: C["unsafe"],  # unsafe
+        1: C["ctrl"],    # safe wait only
+        2: C["onc"],     # safe go only
+        3: C["safe"],    # safe both
+    }
+    CAT_LABEL = {
+        0: "UNSAFE",
+        1: "SAFE WAIT ONLY",
+        2: "SAFE GO ONLY",
+        3: "SAFE BOTH",
     }
 
     # ── rectangular car helper ─────────────────────────────────────
@@ -741,8 +818,10 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
         for k in range(idx_ + 1):
             t0 = times[k]
             t1 = times[k + 1] if k + 1 < N else t0 + dt
+            cat_k = int(safety_cat[k]) if np.isfinite(safety_cat[k]) else 0
+            col = CAT_COLOR.get(cat_k, C["unsafe"])
             ax_.axvspan(t0, t1,
-                        color=C["safe"] if is_safe[k] else C["unsafe"],
+                        color=col,
                         alpha=0.07, zorder=0)
 
     def _style(ax_, ylabel, title, xlabel=None):
@@ -764,14 +843,18 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
         a_rd.set_facecolor("white")
         a_rd.axis("off")
 
-        # Tracking viewport: show both vehicles with margin, equal aspect
+        # Tracking viewport: show all vehicles with margin, equal aspect
         ex, ey = ego_pts[idx]
         ox, oy = onc_pts[idx]
-        cx  = (ex + ox) / 2
-        # Vertical: centre on road midpoint, include north exit lane
-        cy  = (max(ey, oy) + min(-hw, -hw)) / 2 + 2.0
-        # Span to encompass both vehicles + margin
-        span_x = abs(ex - ox) + 8.0
+        all_x = [ex, ox]
+        all_y = [ey, oy]
+        if has_vehicle_2:
+            o2x, o2y = onc2_pts[idx]
+            all_x.append(o2x)
+            all_y.append(o2y)
+        cx  = (min(all_x) + max(all_x)) / 2
+        cy  = (max(all_y) + min(-hw, -hw)) / 2 + 2.0
+        span_x = (max(all_x) - min(all_x)) + 8.0
         span_y = max(span_x, 16.0)   # at least 24 m tall
         # Enforce panel aspect ratio (≈ 2/3 of 18"=12" wide, full 9" tall)
         panel_w, panel_h = 12.0, 7.5
@@ -839,6 +922,7 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
         # boundary markers. This makes slice collapses / jumps visually clear.
         lo_i = safe_s_lo[idx]
         hi_i = safe_s_hi[idx]
+        cat_i = int(safety_cat[idx]) if np.isfinite(safety_cat[idx]) else 0
         unsafe_left = _ego_segment(path_s_min, lo_i, n=180) if np.isfinite(lo_i) and lo_i > path_s_min else np.empty((0, 2))
         unsafe_right = _ego_segment(hi_i, path_s_max, n=180) if np.isfinite(hi_i) and hi_i < path_s_max else np.empty((0, 2))
         safe_seg = _ego_segment(lo_i, hi_i, n=220)
@@ -872,25 +956,33 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
         if np.isfinite(hi_i) and (not np.isfinite(lo_i) or abs(hi_i - lo_i) > 1e-9):
             _draw_boundary_tick(a_rd, hi_i, C["safe"])
 
-        # if np.isfinite(lo_i) and np.isfinite(hi_i):
-        #     if abs(hi_i - lo_i) < 1e-9:
-        #         slice_txt = f"safe $s_{{ego}}$: singleton at {lo_i:.1f} m"
-        #     else:
-        #         slice_txt = f"safe $s_{{ego}}$: [{lo_i:.1f}, {hi_i:.1f}] m"
-        #     a_rd.text(0.02, 0.82, slice_txt,
-        #               transform=a_rd.transAxes, fontsize=8, va="top",
-        #               color=C["txt"], zorder=20,
-        #               bbox=dict(boxstyle="round,pad=0.25", fc="white",
-        #                         ec=C["safe"], alpha=0.92, lw=1.2))
-        #     a_rd.text(0.02, 0.765, "green = certified safe slice, red = unsafe slice",
-        #               transform=a_rd.transAxes, fontsize=7.5, va="top",
-        #               color=C["txt"], zorder=20,
-        #               bbox=dict(boxstyle="round,pad=0.22", fc="white",
-        #                         ec=C["unsafe"], alpha=0.88, lw=1.0))
-
+        if np.isfinite(lo_i) and np.isfinite(hi_i):
+            if abs(hi_i - lo_i) < 1e-9:
+                slice_txt = f"safe $s_{{ego}}$: singleton at {lo_i:.1f} m"
+            else:
+                slice_txt = f"safe $s_{{ego}}$: [{lo_i:.1f}, {hi_i:.1f}] m"
+            a_rd.text(0.02, 0.82, slice_txt,
+                      transform=a_rd.transAxes, fontsize=8, va="top",
+                      color=C["txt"], zorder=20,
+                      bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                                ec=C["safe"], alpha=0.92, lw=1.2))
+        elif np.isnan(lo_i) and np.isnan(hi_i):
+            cat_col = CAT_COLOR.get(cat_i, C["unsafe"])
+            if len(g_vis) > 1:
+                a_rd.plot(g_vis[:, 0], g_vis[:, 1],
+                          c=cat_col, lw=5.0, alpha=0.16,
+                          solid_capstyle="round", zorder=5.32)
+                a_rd.plot(g_vis[:, 0], g_vis[:, 1],
+                          c=cat_col, lw=2.0, alpha=0.55,
+                          solid_capstyle="round", zorder=5.33)
+            a_rd.text(0.02, 0.82, "safe $s_{ego}$ slice: unavailable",
+                      transform=a_rd.transAxes, fontsize=8, va="top",
+                      color=cat_col, zorder=20,
+                      bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                                ec=cat_col, alpha=0.92, lw=1.2))
         # Ego trail
         for k in range(idx):
-            tc = C["safe"] if is_safe[k] else C["unsafe"]
+            tc = CAT_COLOR.get(int(safety_cat[k]), C["unsafe"])
             α  = 0.25 + 0.65 * ((k + 1) / max(idx, 1))
             a_rd.plot(ego_pts[k:k+2, 0], ego_pts[k:k+2, 1],
                       c=tc, lw=3.0, alpha=α,
@@ -902,10 +994,21 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
                       c=C["onc"], lw=2.5, alpha=α,
                       solid_capstyle="round", zorder=6)
 
+        # Vehicle 2 trail (two-oncoming scenario)
+        if has_vehicle_2:
+            for k in range(idx):
+                alpha_ = 0.15 + 0.45 * ((k + 1) / max(idx, 1))
+                a_rd.plot(onc2_pts[k:k+2, 0], onc2_pts[k:k+2, 1],
+                          c=C["onc2"], lw=2.5, alpha=alpha_,
+                          solid_capstyle="round", zorder=6)
+
         # Rectangular cars
-        ego_col = C["safe"] if is_safe[idx] else C["unsafe"]
+        ego_col = CAT_COLOR.get(int(safety_cat[idx]), C["unsafe"])
+        onc1_label = "1" if has_vehicle_2 else "ONC"
         _draw_car(a_rd, ego_pts[idx], ego_hdgs[idx], ego_col, "EGO")
-        _draw_car(a_rd, onc_pts[idx], 180.0,         C["onc"],  "ONC")
+        _draw_car(a_rd, onc_pts[idx], 180.0, C["onc"], onc1_label)
+        if has_vehicle_2:
+            _draw_car(a_rd, onc2_pts[idx], 180.0, C["onc2"], "2")
 
         # Road direction arrows (relative to current viewport)
         for ax_x in np.arange(xl[0] + 8, ex - 10, 18):
@@ -923,17 +1026,38 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
         a_rd.text(0.02, 0.98, f"$t = {times[idx]:.1f}\\,$s",
                   transform=a_rd.transAxes, fontsize=13, va="top",
                   fontweight="bold", color=C["txt"], zorder=20)
-        slab = "CERTIFIED SAFE" if is_safe[idx] else "UNCERTIFIED"
-        scol = C["safe"] if is_safe[idx] else C["unsafe"]
+        slab = CAT_LABEL.get(cat_i, "UNSAFE")
+        scol = CAT_COLOR.get(cat_i, C["unsafe"])
         a_rd.text(0.02, 0.89, slab, transform=a_rd.transAxes, fontsize=9,
                   va="top", fontweight="bold", color=scol,
                   bbox=dict(boxstyle="round,pad=0.3", fc="white",
                             ec=scol, alpha=0.9, lw=1.5), zorder=20)
+        a_rd.text(0.02, 0.74,
+                  "regions:\n"
+                  "\u25A0 unsafe\n"
+                  "\u25A0 safe wait\n"
+                  "\u25A0 safe go\n"
+                  "\u25A0 safe both",
+                  transform=a_rd.transAxes, fontsize=7.2, va="top",
+                  color=C["txt"], zorder=20,
+                  bbox=dict(boxstyle="round,pad=0.25", fc="white",
+                            ec=C["guide"], alpha=0.9, lw=1.0))
+        legend_x0 = 0.035
+        legend_y0 = 0.705
+        dy = 0.038
+        for i_cat, cat in enumerate([0, 1, 2, 3]):
+            y_ = legend_y0 - i_cat * dy
+            a_rd.plot([legend_x0], [y_], marker="s", markersize=5,
+                      color=CAT_COLOR[cat], transform=a_rd.transAxes,
+                      zorder=21, clip_on=False)
         # State readout
-        a_rd.text(0.98, 0.98,
-                  f"$s_{{ego}}={s_ego[idx]:.1f}$ m\n"
-                  f"$v_{{ego}}={v_ego[idx]:.2f}$ m/s\n"
-                  f"$s_{{onc}}={s_onc[idx]:.1f}$ m",
+        readout = (f"$s_{{ego}}={s_ego[idx]:.1f}$ m\n"
+                   f"$v_{{ego}}={v_ego[idx]:.2f}$ m/s\n"
+                   f"$s_{{onc1}}={s_onc[idx]:.1f}$ m\n"
+                   f"wait={int(wait_safe[idx])}, go={int(go_safe[idx])}")
+        if has_vehicle_2:
+            readout += f"\n$s_{{onc2}}={s_onc_2[idx]:.1f}$ m"
+        a_rd.text(0.98, 0.98, readout,
                   transform=a_rd.transAxes, fontsize=8, va="top", ha="right",
                   family="monospace", color=C["txt"],
                   bbox=dict(boxstyle="round,pad=0.3", fc="white",
@@ -945,8 +1069,12 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
         # ① Velocities (top-left)
         a_vv.clear()
         a_vv.set_xlim(TL); a_vv.set_ylim(VVL)
+        onc1_vlabel = "$v_1$" if has_vehicle_2 else "$v_{onc}$"
         a_vv.plot(times[sl], v_onc[sl], "-o", c=C["onc"],
-                  lw=2.0, ms=3.0, label="$v_{onc}$", zorder=5)
+                  lw=2.0, ms=3.0, label=onc1_vlabel, zorder=5)
+        if has_vehicle_2:
+            a_vv.plot(times[sl], v_onc_2[sl], "-^", c=C["onc2"],
+                      lw=2.0, ms=3.0, label="$v_2$", zorder=5)
         a_vv.plot(times[sl], v_ego[sl], "--s", c=C["vego"],
                   lw=2.0, ms=3.0, label="$v_{ego}$", zorder=5)
         a_vv.legend(fontsize=8, loc="lower right", framealpha=0.85)
@@ -980,16 +1108,25 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
         bw = dt * 0.72
         a_tm.bar(times[sl], ctrl_ms[sl], width=bw,
                  color=C["ctrl"], alpha=0.85, label="Controller", zorder=5)
-        a_tm.bar(times[sl], synth_ms[sl], width=bw, bottom=ctrl_ms[sl],
-                 color=C["synth"], alpha=0.85, label="Synthesis", zorder=5)
+        if has_dual_synth:
+            a_tm.bar(times[sl], synth_wait_ms[sl], width=bw, bottom=ctrl_ms[sl],
+                     color=C["synth"], alpha=0.85, label="Synth (wait)", zorder=5)
+            a_tm.bar(times[sl], synth_go_ms[sl], width=bw,
+                     bottom=ctrl_ms[sl] + synth_wait_ms[sl],
+                     color=C["onc2"], alpha=0.85, label="Synth (go)", zorder=5)
+        else:
+            a_tm.bar(times[sl], synth_ms[sl], width=bw, bottom=ctrl_ms[sl],
+                     color=C["synth"], alpha=0.85, label="Synthesis", zorder=5)
         a_tm.axhline(ctrl_ms.mean(), c=C["ctrl"], lw=1.0, ls="--",
                      alpha=0.6, zorder=4)
         a_tm.legend(fontsize=7, loc="upper right", framealpha=0.85)
         _style(a_tm, "Time (ms)", "Computation Time", xlabel="Time (s)")
         _spans(a_tm, idx)
 
-        fig.suptitle("MonoSafe  ·  Left-Turn Intersection  (dt = 0.1 s)",
-                     fontsize=13, fontweight="bold",
+        title_str = ("MonoSafe  ·  Two Oncoming Vehicles  (dt = 0.1 s)"
+                     if has_vehicle_2
+                     else "MonoSafe  ·  Left-Turn Intersection  (dt = 0.1 s)")
+        fig.suptitle(title_str, fontsize=13, fontweight="bold",
                      color=C["txt"], y=0.97)
         return []
 

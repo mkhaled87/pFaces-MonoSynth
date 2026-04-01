@@ -10,30 +10,31 @@
     "controller": {
         "prediction_horizon": 10,
         "control_horizon": 10,
-        "ode_substeps": 50,
+        "ode_substeps": 20,
         "mppi_rollouts": 512,
         "mppi_sigma": 1000.0,
+        "mppi_iterations": 10,
         "cost": {
             "w_progress": 1.0,
             "w_safety": 10000.0,
             "w_terminal_v": 10.0,
-            "w_jerk": 0.001,
-            "goal": -10.0,
-            "unsafe_goal": -40.0
+            "w_jerk": 0.000001,
+            "goal": -8.0,
+            "unsafe_goal": 10.0
         }
     },
 
     "simulation": {
-        "x0": [-40.0, 0.0, -50.0],
-        "duration": 15.0,
-        "sampling_period": 0.5,
+        "x0": [-30.0, 2.0, -50.0],
+        "duration": 6.0,
+        "sampling_period": 0.1,
         "resynth_threshold": 0.5,
         "resynth_policy": "always"
     },
 
     "sensor": {
         "type": "const",
-        "value": 8.0
+        "value": 0.0
     },
 
     "verbose": true

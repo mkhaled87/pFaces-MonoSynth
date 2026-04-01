@@ -77,6 +77,7 @@ Built-in scenarios:
   - turn_ego_first       (3D: s_ego, v_ego, s_onc)
   - turn_oncoming_first  (3D: s_ego, v_ego, s_onc)
   - acc                  (3D: h, v_ego, v_lead)
+  - two_oncoming         (4D: s_ego, v_ego, s_onc1, s_onc2) — dual synthesis
 )";
 }
 
@@ -148,101 +149,243 @@ int main(int argc, char** argv) {
         }
 
         // =============================================================
-        // 3. Initialize safe set
+        // 3. Initialize safe set (unified grid)
         // =============================================================
         SafeSet safe_set;
-        safe_set.init(cfg.state_grid, cfg.priorities);
+
+        // Detect dual-synthesis mode (two_oncoming scenario)
+        bool is_dual = J.contains("synthesis_go") && J.contains("synthesis_wait");
+
+        // For single mode, allocate the bitmap on the unified grid.
+        // For dual mode, init_dual_proxy() is called later — no 4D bitmap needed.
+        if (!is_dual) {
+            safe_set.init(cfg.state_grid, cfg.priorities);
+        }
+
+        // Sub-SafeSets for dual mode (must outlive simulation)
+        SafeSet safe_set_go, safe_set_wait;
+        std::shared_ptr<SynthesisBackend> synth_go_ptr, synth_wait_ptr;
 
         // =============================================================
-        // 4. Synthesis backend
+        // 4. Synthesis backend(s)
         // =============================================================
-        json js = J.value("synthesis", json::object());
-        std::string synth_mode   = jget<std::string>(js, "mode", "external");
-        std::string kernel_pack  = jget<std::string>(js, "kernel_pack", "../../kernel-pack");
-        int device_id            = jget<int>(js, "device_id", 1);
-        std::string basis_path   = jget<std::string>(js, "basis_file", "");
-
         bool has_runtime_param = !dynamics->measured_param_name().empty();
-
         std::unique_ptr<SynthesisBackend> synth;
-        if (synth_mode == "file") {
-            if (basis_path.empty())
-                throw std::runtime_error("synthesis.basis_file required for mode=file");
-            synth = std::make_unique<FileSynthesis>(basis_path);
-        } else if (synth_mode == "external") {
-            ExternalSynthesis::Params ep;
-            ep.cfg_path         = cfg_path;
-            ep.kernel_pack      = kernel_pack;
-            ep.dynamics_file    = cfg.dynamics_file;
-            ep.synthesis_macro  = dynamics->synthesis_macro();
-            ep.device_id        = device_id;
-            ep.output_dir       = output_dir;
-            synth = std::make_unique<ExternalSynthesis>(ep, cfg);
-        }
+
+        if (!is_dual) {
+            json js = J.value("synthesis", json::object());
+            std::string synth_mode   = jget<std::string>(js, "mode", "external");
+            std::string kernel_pack  = jget<std::string>(js, "kernel_pack", "../../kernel-pack");
+            int device_id            = jget<int>(js, "device_id", 1);
+            std::string basis_path   = jget<std::string>(js, "basis_file", "");
+
+            if (synth_mode == "file") {
+                if (basis_path.empty())
+                    throw std::runtime_error("synthesis.basis_file required for mode=file");
+                synth = std::make_unique<FileSynthesis>(basis_path);
+            } else if (synth_mode == "external") {
+                ExternalSynthesis::Params ep;
+                ep.cfg_path         = cfg_path;
+                ep.kernel_pack      = kernel_pack;
+                ep.dynamics_file    = cfg.dynamics_file;
+                ep.synthesis_macro  = dynamics->synthesis_macro();
+                ep.device_id        = device_id;
+                ep.output_dir       = output_dir;
+                synth = std::make_unique<ExternalSynthesis>(ep, cfg);
+            }
 #if defined(HAS_PFACES_SDK) && HAS_PFACES_SDK
-        else if (synth_mode == "direct") {
-            DirectSynthesis::Params dp;
-            dp.cfg_path          = cfg_path;
-            dp.kernel_pack       = kernel_pack;
-            dp.device_id         = device_id;
-            dp.has_runtime_param = has_runtime_param;
-            synth = std::make_unique<DirectSynthesis>(dp);
-        }
+            else if (synth_mode == "direct") {
+                DirectSynthesis::Params dp;
+                dp.cfg_path          = cfg_path;
+                dp.kernel_pack       = kernel_pack;
+                dp.device_id         = device_id;
+                dp.has_runtime_param = has_runtime_param;
+                synth = std::make_unique<DirectSynthesis>(dp);
+            }
 #endif
-        else {
-            throw std::runtime_error("Unknown synthesis mode: " + synth_mode);
+            else {
+                throw std::runtime_error("Unknown synthesis mode: " + synth_mode);
+            }
+        }
+
+        if (is_dual) {
+            auto jsg = J["synthesis_go"];
+            auto jsw = J["synthesis_wait"];
+
+            std::string cfg_go_path   = jsg.at("cfg_file").get<std::string>();
+            std::string cfg_wait_path = jsw.at("cfg_file").get<std::string>();
+
+            Config cfg_go   = parse_config(cfg_go_path);
+            Config cfg_wait = parse_config(cfg_wait_path);
+
+            safe_set_go.init(cfg_go.state_grid, cfg_go.priorities);
+            safe_set_wait.init(cfg_wait.state_grid, cfg_wait.priorities);
+
+            // Dual proxy: map 4D state → 3D sub-SafeSets
+            // state = [s_ego(0), v_ego(1), s_onc1(2), s_onc2(3)]
+            // wait sub-SafeSet: (s_ego, v_ego, s_onc1) → dims {0, 1, 2}
+            // go   sub-SafeSet: (s_ego, v_ego, s_onc2) → dims {0, 1, 3}
+            // Bypass: once an oncoming passes collision zone (>= 10.0), that
+            // sub-constraint is automatically satisfied.
+            std::vector<int> dims_wait = {0, 1, 2};
+            std::vector<int> dims_go   = {0, 1, 3};
+            safe_set.init_dual_proxy(cfg.state_grid,
+                                     &safe_set_wait, dims_wait,
+                                     &safe_set_go,   dims_go,
+                                     2, 3, 10.0);  // onc1=dim2, onc2=dim3, CZ=10
+
+            if (verbose) {
+                std::cout << "Dual proxy mode (independent velocities):\n"
+                          << "  Z_wait cfg: " << cfg_wait_path
+                          << " (" << cfg_wait.state_grid.total_cells << " cells)\n"
+                          << "  Z_go   cfg: " << cfg_go_path
+                          << " (" << cfg_go.state_grid.total_cells << " cells)\n"
+                          << "  Unified:    " << cfg.state_grid.n_dim << "D, "
+                          << cfg.state_grid.total_cells << " virtual cells\n";
+            }
+
+            // Factory: create synthesis backend from sub-config JSON
+            auto make_sub_synth = [&](const json& jsub, const Config& sub_cfg,
+                                      const std::string& sub_cfg_path,
+                                      const std::string& macro,
+                                      const std::string& sub_label
+                                      ) -> std::shared_ptr<SynthesisBackend>
+            {
+                std::string mode = jget<std::string>(jsub, "mode", "external");
+                std::string kp   = jget<std::string>(jsub, "kernel_pack", "../../kernel-pack");
+                int dev          = jget<int>(jsub, "device_id", 1);
+
+                if (verbose)
+                    std::cout << "  " << sub_label << " mode=" << mode
+                              << " dev=" << dev << "\n";
+
+                if (mode == "external") {
+                    std::string sub_dir = (fs::path(output_dir) / sub_label).string();
+                    fs::create_directories(sub_dir);
+                    ExternalSynthesis::Params ep;
+                    ep.cfg_path        = sub_cfg_path;
+                    ep.kernel_pack     = kp;
+                    ep.dynamics_file   = sub_cfg.dynamics_file;
+                    ep.synthesis_macro = macro;
+                    ep.device_id       = dev;
+                    ep.output_dir      = sub_dir;
+                    return std::make_shared<ExternalSynthesis>(ep, sub_cfg);
+                }
+#if defined(HAS_PFACES_SDK) && HAS_PFACES_SDK
+                if (mode == "direct") {
+                    DirectSynthesis::Params dp;
+                    dp.cfg_path          = sub_cfg_path;
+                    dp.kernel_pack       = kp;
+                    dp.device_id         = dev;
+                    dp.has_runtime_param = true;
+                    return std::make_shared<DirectSynthesis>(dp);
+                }
+#endif
+                throw std::runtime_error("Unknown synthesis mode: " + mode);
+            };
+
+            synth_go_ptr   = make_sub_synth(jsg, cfg_go, cfg_go_path,
+                                            "V0_MAX", "synth_go");
+            synth_wait_ptr = make_sub_synth(jsw, cfg_wait, cfg_wait_path,
+                                            "V0_MIN", "synth_wait");
         }
 
         // =============================================================
-        // 5. Sensor (only if scenario has a measured parameter)
+        // 5. Sensors
         // =============================================================
+        auto make_sensor = [](const json& jsen) -> std::pair<std::shared_ptr<Sensor>, double> {
+            std::string sensor_type = jsen.value("type", "const");
+            double init_val = jsen.value("value", 0.0);
+            std::shared_ptr<Sensor> s;
+            if (sensor_type == "step") {
+                double step_to   = jsen.value("step_to", 6.0);
+                double step_time = jsen.value("step_time", 5.0);
+                s = std::make_shared<StepSensor>(init_val, step_to, step_time);
+            } else if (sensor_type == "sine") {
+                double amp  = jsen.value("amplitude", 3.0);
+                double freq = jsen.value("frequency", 0.1);
+                s = std::make_shared<SineSensor>(init_val, amp, freq);
+            } else {
+                s = std::make_shared<ConstantSensor>(init_val);
+            }
+            return {s, init_val};
+        };
+
         json jsen = J.value("sensor", json::object());
         std::shared_ptr<Sensor> sensor = nullptr;
         double initial_param_value = 0.0;
 
         if (has_runtime_param) {
-            std::string sensor_type = jget<std::string>(jsen, "type", "const");
-            initial_param_value = jget<double>(jsen, "value", 0.0);
-
-            if (sensor_type == "step") {
-                double step_to   = jget<double>(jsen, "step_to", 6.0);
-                double step_time = jget<double>(jsen, "step_time", 5.0);
-                sensor = std::make_shared<StepSensor>(initial_param_value, step_to, step_time);
-            } else if (sensor_type == "sine") {
-                double amp  = jget<double>(jsen, "amplitude", 3.0);
-                double freq = jget<double>(jsen, "frequency", 0.1);
-                sensor = std::make_shared<SineSensor>(initial_param_value, amp, freq);
-            } else {
-                sensor = std::make_shared<ConstantSensor>(initial_param_value);
-            }
-
+            auto [s, iv] = make_sensor(jsen);
+            sensor = s;
+            initial_param_value = iv;
             dynamics->set_param(dynamics->measured_param_name(), initial_param_value);
 
             if (verbose)
-                std::cout << "Sensor:      " << sensor_type
+                std::cout << "Sensor 1:    " << jget<std::string>(jsen, "type", "const")
                           << "  " << dynamics->measured_param_name()
                           << "=" << initial_param_value << "\n";
+        }
+
+        std::shared_ptr<Sensor> sensor_2 = nullptr;
+        double initial_param_value_2 = 0.0;
+
+        if (is_dual) {
+            json jsen2 = J.value("sensor_2", json::object());
+            auto [s2, iv2] = make_sensor(jsen2);
+            sensor_2 = s2;
+            initial_param_value_2 = iv2;
+            dynamics->set_param("v_vehicle_2", initial_param_value_2);
+
+            if (verbose)
+                std::cout << "Sensor 2:    " << jget<std::string>(jsen2, "type", "const")
+                          << "  v_vehicle_2=" << initial_param_value_2 << "\n";
         }
 
         // =============================================================
         // 6. Initial synthesis
         // =============================================================
-        if (verbose) std::cout << "Running initial synthesis (mode=" << synth_mode << ")...\n";
-        double synth_ms = synth->synthesize(initial_param_value, safe_set);
+        if (is_dual) {
+            if (verbose) std::cout << "Running dual initial synthesis...\n";
 
-        if (verbose) {
-            const auto& sd = synth->last_detail();
-            std::cout << "  Synthesis: " << std::fixed << std::setprecision(1)
-                      << synth_ms << " ms  (" << sd.iterations << " iters)"
-                      << "  basis=" << sd.basis_size
-                      << "  safe=" << sd.safe_cells << "/" << sd.total_cells
-                      << " (" << std::setprecision(1)
-                      << (sd.total_cells > 0 ? 100.0 * sd.safe_cells / sd.total_cells : 0.0)
-                      << "%)\n";
+            double ms_wait = synth_wait_ptr->synthesize(initial_param_value, safe_set_wait);
+            double ms_go   = synth_go_ptr->synthesize(initial_param_value_2, safe_set_go);
+
+            if (verbose) {
+                auto print_sub = [](const std::string& lbl, double ms,
+                                    const SynthesisDetail& sd) {
+                    std::cout << "  " << lbl << ": "
+                              << std::fixed << std::setprecision(1) << ms << " ms"
+                              << "  (" << sd.iterations << " iters)"
+                              << "  basis=" << sd.basis_size
+                              << "  safe=" << sd.safe_cells << "/" << sd.total_cells
+                              << " (" << std::setprecision(1)
+                              << (sd.total_cells > 0 ? 100.0 * sd.safe_cells / sd.total_cells : 0.0)
+                              << "%)\n";
+                };
+                print_sub("Z_wait", ms_wait, synth_wait_ptr->last_detail());
+                print_sub("Z_go  ", ms_go,   synth_go_ptr->last_detail());
+            }
+        } else {
+            std::string synth_mode = jget<std::string>(
+                J.value("synthesis", json::object()), "mode", "external");
+            if (verbose) std::cout << "Running initial synthesis (mode=" << synth_mode << ")...\n";
+            double synth_ms = synth->synthesize(initial_param_value, safe_set);
+
+            if (verbose) {
+                const auto& sd = synth->last_detail();
+                std::cout << "  Synthesis: " << std::fixed << std::setprecision(1)
+                          << synth_ms << " ms  (" << sd.iterations << " iters)"
+                          << "  basis=" << sd.basis_size
+                          << "  safe=" << sd.safe_cells << "/" << sd.total_cells
+                          << " (" << std::setprecision(1)
+                          << (sd.total_cells > 0 ? 100.0 * sd.safe_cells / sd.total_cells : 0.0)
+                          << "%)\n";
+            }
         }
 
-        if (safe_set.basis_size() == 0 && safe_set.count_safe_cells() == 0)
-            throw std::runtime_error("Empty basis — no safe set found.");
+        if (!is_dual && safe_set.count_safe_cells() == 0)
+            throw std::runtime_error("Empty safe set — no safe cells found.");
 
         // =============================================================
         // 7. Build cost params (scenario defaults + JSON overrides)
@@ -323,6 +466,17 @@ int main(int argc, char** argv) {
         auto synth_ptr = std::shared_ptr<SynthesisBackend>(std::move(synth));
         Simulation sim(dynamics, safe_set, controller, synth_ptr, sensor,
                        cfg.state_grid);
+
+        if (is_dual) {
+            DualSynthState ds;
+            ds.ss_go       = &safe_set_go;
+            ds.ss_wait     = &safe_set_wait;
+            ds.synth_go    = synth_go_ptr;
+            ds.synth_wait  = synth_wait_ptr;
+            ds.sensor_2    = sensor_2;
+            ds.param_name_2 = "v_vehicle_2";
+            sim.set_dual_synthesis(std::move(ds));
+        }
 
         auto log = sim.run(sim_cfg);
 

@@ -14,6 +14,7 @@
 #include "turn_ego_first.h"
 #include "turn_oncoming_first.h"
 #include "acc.h"
+#include "two_oncoming.h"
 
 namespace rt_ctrl {
 namespace {
@@ -28,6 +29,9 @@ struct ScenarioRegistrar {
         });
         register_dynamics("acc", [](const Config&) {
             return std::make_unique<AccDynamics>();
+        });
+        register_dynamics("two_oncoming", [](const Config&) {
+            return std::make_unique<TwoOncomingDynamics>();
         });
     }
 };

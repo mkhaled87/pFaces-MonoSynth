@@ -48,6 +48,8 @@ struct SynthesisDetail {
     double total_ms       = 0.0;  ///< Wall-clock total
     double gpu_exec_ms    = 0.0;  ///< GPU kernel execution (all phases)
     double transfer_ms    = 0.0;  ///< GPU→CPU bitmap transfer
+    double precompute_ms  = 0.0;  ///< Precompute transitions phase
+    double gfp_ms         = 0.0;  ///< GFP iteration phase (from compute_start)
     int    iterations     = 0;    ///< Fixed-point iteration count
     int    basis_size     = 0;    ///< Antichain basis |B|
     int    safe_cells     = 0;    ///< Total safe cells in bitmap
@@ -289,9 +291,12 @@ public:
         spCfg->parse(defaultConfiguration::getSchema(),
                      defaultConfiguration::getDefaults());
         
-        // 4. Create kernel launch state
+        // 4. Create kernel launch state. Match the scope to the selected device
+        // so the SDK loads the GPU kernel pack variant for GPU execution.
+        const std::string kernel_scope =
+            pfacesKernelSource::getDefaultScope(*machine_, devIdx);
         auto spLaunchState = std::make_shared<pfacesKernelLaunchState>(
-            "mono_synth", "cpu", params_.kernel_pack);
+            "mono_synth", kernel_scope, params_.kernel_pack);
         
         // 5. Create kernel instance
         kernel_ = std::make_shared<mono_synth::pfacesKernel_mono_synth>(
@@ -299,21 +304,25 @@ public:
         
         // Configure for direct mode: no CSV, no benchmark repetition, skip cache
         kernel_->setRecordBasisEvolution(false);
+        kernel_->setWriteIterationStats(false);  // no iteration_stats.csv in RT path
         kernel_->setBenchmarkCount(1);
         kernel_->setSkipCache(true);
+
+        // RT-mode optimizations for GPU TT-only:
+        //  - Skip bitmap build + 97MB GPU→CPU readback (use threshold table instead)
+        //  - The transition readback is also skipped inside configureParallelProgram
+        if (kernel_->isUseTTOnlyGPU()) {
+            kernel_->setSkipBitmapBuild(true);
+            std::cout << "[DirectSynthesis] GPU TT-only: bitmap build SKIPPED "
+                      << "(using threshold table for O(1) queries)\n";
+        }
         
-        // Load tune results or mark as tuned (use local WG size = 0 → let OpenCL decide)
+        // Load persisted tune results. If none exist, mark as tuned with defaults.
+        // (pFaces SDK will use internal defaults when setTuned(true) is called.)
         if (!kernel_->loadTuneResults(*machine_)) {
-            // Provide dummy tune results for each function/device pair
-            // 3 kernel functions: precompute_transitions, check_basis_safety, build_bitmap
-            for (size_t funcIdx = 0; funcIdx < 3; ++funcIdx) {
-                pfacesKernelRunProfile profile(devIdx, funcIdx);
-                profile.usedWorkGroupSize = 1;  // single work item per group (safe default)
-                profile.preferredMultiple = 1;
-                profile.timeKernelExecute = 1.0;  // dummy non-zero time
-                kernel_->addTuneResult(profile, funcIdx);
-            }
+            std::cout << "[DirectSynthesis] No tune results found. Using defaults.\n";
             kernel_->setTuned(true);
+            std::cout << "[DirectSynthesis] Kernel marked as tuned (defaults).\n";
         }
         
         // 6. Create parallel program and configure
@@ -342,21 +351,40 @@ public:
             kernel_->setRuntimeParam0((float)param_value);
         }
 
+        // After first successful synthesis, allow skipping precompute when
+        // the RT controller sets m_skip_precompute = true.
+        // (By default, precompute always runs.)
+
         // Stage B: GPU kernel execution (precompute_transitions → iterations → bitmap)
         // Suppress pFaces internal prints (benchmark, bitmap stats)
         auto tg0 = Clk::now();
-        std::streambuf* orig_buf = std::cout.rdbuf();
-        std::ostringstream devnull;
-        std::cout.rdbuf(devnull.rdbuf());
+        struct CoutGuard {
+            std::streambuf* orig;
+            std::ostringstream sink;
+            CoutGuard() : orig(std::cout.rdbuf()) { std::cout.rdbuf(sink.rdbuf()); }
+            ~CoutGuard() { std::cout.rdbuf(orig); }
+        } cout_guard;
         auto profile = kernel_->runSinglePlatformMultipleDevices(*program_);
-        std::cout.rdbuf(orig_buf);
+        std::cout.rdbuf(cout_guard.orig);  // restore early
         auto tg1 = Clk::now();
 
-        // Stage C: bitmap transfer GPU → CPU → SafeSet
+        // Stage C: populate SafeSet from kernel results
         auto tt0 = Clk::now();
-        const auto& bitmap = kernel_->getBitmap();
-        safe_set.set_bitmap_direct(bitmap.data(), kernel_->getBitmapSize());
-        safe_set.set_basis_size_hint(kernel_->getBasisSize());
+        if (kernel_->isUseTTOnlyGPU()) {
+            // Use threshold table directly — already on host from processTTGPUUpdate.
+            // No bitmap build needed: ~200KB vs 97MB transfer + 25.4M GPU work items.
+            const auto& tt = kernel_->getThresholdTable();
+            safe_set.set_threshold_table(
+                tt.data(),
+                kernel_->getThresholdTableSize(),
+                kernel_->getThresholdDStar(),
+                kernel_->getThresholdKeyStrides());
+            safe_set.set_basis_size_hint(kernel_->getBasisSize());
+        } else {
+            const auto& bitmap = kernel_->getBitmap();
+            safe_set.set_bitmap_direct(bitmap.data(), kernel_->getBitmapSize());
+            safe_set.set_basis_size_hint(kernel_->getBasisSize());
+        }
         auto tt1 = Clk::now();
 
         auto t1 = Clk::now();
@@ -368,8 +396,14 @@ public:
         last_detail_.transfer_ms = std::chrono::duration<double, std::milli>(tt1 - tt0).count();
         last_detail_.iterations  = kernel_->m_iterations;
         last_detail_.basis_size  = kernel_->getBasisSize();
-        last_detail_.safe_cells  = safe_set.count_safe_cells();
+        last_detail_.safe_cells  = kernel_->isUseTTOnlyGPU()
+                                   ? kernel_->getSafeCellCount()
+                                   : safe_set.count_safe_cells();
         last_detail_.total_cells = safe_set.total_cells();
+
+        // Phase timing from kernel host functions
+        last_detail_.precompute_ms = kernel_->m_precompute_ms;
+        last_detail_.gfp_ms        = kernel_->m_gfp_total_ms;
 
         return ms;
     }

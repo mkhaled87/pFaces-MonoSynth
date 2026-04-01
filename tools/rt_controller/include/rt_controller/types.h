@@ -44,20 +44,20 @@ struct GridDesc {
     std::vector<double> eta;               ///< Cell width per dimension
     int              total_cells = 0;      ///< Product of all sizes
 
-    /// Compute flat index from multi-index (row-major: last dim varies fastest)
+    /// Compute flat index from multi-index (column-major: dim 0 varies fastest)
     inline int flatten(const int* idx) const {
         int flat = 0;
         int stride = 1;
-        for (int d = n_dim - 1; d >= 0; --d) {
+        for (int d = 0; d < n_dim; ++d) {
             flat += idx[d] * stride;
             stride *= sizes[d];
         }
         return flat;
     }
 
-    /// Compute multi-index from flat index
+    /// Compute multi-index from flat index (column-major: dim 0 varies fastest)
     inline void unflatten(int flat, int* idx) const {
-        for (int d = n_dim - 1; d >= 0; --d) {
+        for (int d = 0; d < n_dim; ++d) {
             idx[d] = flat % sizes[d];
             flat /= sizes[d];
         }
@@ -119,12 +119,17 @@ struct LogEntry {
     double time       = 0.0;
     Vec    state;
     Vec    control;
-    double param_value = 0.0;  ///< Measured parameter value (0 if none)
+    double param_value   = 0.0;  ///< Measured parameter value (0 if none)
+    double param_value_2 = 0.0;  ///< Second measured parameter (dual scenarios)
     bool   is_safe    = false;
+    bool   wait_safe  = false;   ///< Safe in wait sub-SafeSet (dual mode)
+    bool   go_safe    = false;   ///< Safe in go sub-SafeSet (dual mode)
     double safe_s_lo  = std::numeric_limits<double>::quiet_NaN(); ///< Safe range lower bound along s_ego / dim 0
     double safe_s_hi  = std::numeric_limits<double>::quiet_NaN(); ///< Safe range upper bound along s_ego / dim 0
     double query_ns   = 0.0;   ///< Safe set query time (nanoseconds)
     double synth_ms   = 0.0;   ///< Synthesis time (ms), 0 if not recomputed
+    double synth_wait_ms = 0.0;  ///< Wait sub-synthesis time (ms), dual mode
+    double synth_go_ms   = 0.0;  ///< Go sub-synthesis time (ms), dual mode
     double ctrl_ms    = 0.0;   ///< Controller solve time (ms)
     int    basis_size = 0;     ///< Current basis size
     double safe_frac  = 0.0;   ///< Fraction of state space that is safe

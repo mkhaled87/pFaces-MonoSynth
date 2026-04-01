@@ -27,6 +27,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -93,6 +94,18 @@ struct SimConfig {
 };
 
 // ---------------------------------------------------------------------------
+// Dual-synthesis state (for scenarios like two_oncoming)
+// ---------------------------------------------------------------------------
+struct DualSynthState {
+    SafeSet* ss_go   = nullptr;
+    SafeSet* ss_wait = nullptr;
+    std::shared_ptr<SynthesisBackend> synth_go;
+    std::shared_ptr<SynthesisBackend> synth_wait;
+    std::shared_ptr<Sensor> sensor_2;
+    std::string param_name_2;
+};
+
+// ---------------------------------------------------------------------------
 // Simulation engine
 // ---------------------------------------------------------------------------
 class Simulation {
@@ -116,6 +129,8 @@ public:
         , state_grid_(state_grid)
     {}
 
+    void set_dual_synthesis(DualSynthState ds) { dual_ = std::move(ds); }
+
     /**
      * Run the full closed-loop simulation.
      * @return  Vector of log entries (one per time step).
@@ -124,11 +139,13 @@ public:
         std::vector<LogEntry> log;
         Vec state = sim_cfg.x0;
         double t = 0.0;
-        double last_param_val = std::numeric_limits<double>::quiet_NaN();
+        double last_param_val   = std::numeric_limits<double>::quiet_NaN();
+        double last_param_val_2 = std::numeric_limits<double>::quiet_NaN();
         int step = 0;
         const int total_steps = static_cast<int>(sim_cfg.total_time / sim_cfg.dt);
 
         const bool has_param = (sensor_ != nullptr);
+        const bool has_dual = dual_.has_value();
         const std::string param_name = dyn_->measured_param_name();
         const auto snames = dyn_->state_names();
         const auto inames = dyn_->input_names();
@@ -185,48 +202,129 @@ public:
                 std::cout << "  [1] Param:     (none)\n";
             }
 
-            // 2. Resynthesize based on policy
-            bool do_resynth = false;
-            if (has_param) {
-                if (sim_cfg.resynth_policy == "always") {
-                    do_resynth = true;
-                } else if (sim_cfg.resynth_policy == "never") {
-                    do_resynth = false;
-                } else { // "threshold" (default)
-                    do_resynth = std::isnan(last_param_val) ||
-                                 std::fabs(param_val - last_param_val) > sim_cfg.resynth_thresh;
-                }
-            }
-            if (do_resynth) {
-                double synth_ms = synth_->synthesize(param_val, safe_set_);
-                entry.synth_ms = synth_ms;
-                last_param_val = param_val;
+            // 1b. Dual mode: sense second parameter
+            double param_val_2 = 0.0;
+            if (has_dual && dual_->sensor_2) {
+                param_val_2 = dual_->sensor_2->sense(t);
+                entry.param_value_2 = param_val_2;
+                dyn_->set_param(dual_->param_name_2, param_val_2);
 
                 if (sim_cfg.verbose) {
-                    const auto& d = synth_->last_detail();
-                    std::cout << "  [2] Synthesis: " << std::setprecision(1) << synth_ms << " ms  (RESYNTHESIZED)\n"
-                              << "        GPU kernels : " << std::setprecision(1) << d.gpu_exec_ms << " ms"
-                              << "  (" << d.iterations << " iters)\n"
-                              << "        Bitmap xfer : " << std::setprecision(2) << d.transfer_ms << " ms\n"
-                              << "        Basis: " << d.basis_size
-                              << "  Safe: " << d.safe_cells << "/" << d.total_cells
-                              << " (" << std::setprecision(1)
-                              << (d.total_cells > 0 ? 100.0 * d.safe_cells / d.total_cells : 0.0) << "%)\n";
+                    std::cout << "  [1b] Param2:   " << dual_->param_name_2 << "="
+                              << std::setprecision(2) << param_val_2 << "\n";
                 }
-            } else if (sim_cfg.verbose) {
-                if (has_param) {
-                    std::cout << "  [2] Synthesis: skipped (Δ="
+            }
+
+            // 2. Resynthesize based on policy
+            if (has_dual) {
+                // Dual re-synthesis: check each sensor independently
+                auto needs_resynth = [&](double pv, double& last_pv) -> bool {
+                    if (sim_cfg.resynth_policy == "never") return false;
+                    if (sim_cfg.resynth_policy == "always") return true;
+                    bool needed = std::isnan(last_pv) ||
+                                  std::fabs(pv - last_pv) > sim_cfg.resynth_thresh;
+                    return needed;
+                };
+
+                bool resynth_wait = needs_resynth(param_val, last_param_val);
+                bool resynth_go   = needs_resynth(param_val_2, last_param_val_2);
+                double total_synth_ms = 0.0;
+                double wait_ms = 0.0, go_ms = 0.0;
+
+                if (resynth_wait) {
+                    wait_ms = dual_->synth_wait->synthesize(param_val, *dual_->ss_wait);
+                    total_synth_ms += wait_ms;
+                    last_param_val = param_val;
+                }
+                if (resynth_go) {
+                    go_ms = dual_->synth_go->synthesize(param_val_2, *dual_->ss_go);
+                    total_synth_ms += go_ms;
+                    last_param_val_2 = param_val_2;
+                }
+                if (resynth_wait || resynth_go) {
+                    // Dual proxy mode: no intersection bitmap to rebuild.
+                    // Sub-SafeSet bitmaps are already updated in place.
+                    entry.synth_ms = total_synth_ms;
+                    entry.synth_wait_ms = wait_ms;
+                    entry.synth_go_ms   = go_ms;
+
+                    if (sim_cfg.verbose) {
+                        std::cout << "  [2] Synthesis: " << std::setprecision(1)
+                                  << total_synth_ms << " ms  (DUAL RESYNTHESIZED";
+                        if (resynth_wait) std::cout << " wait";
+                        if (resynth_go) std::cout << " go";
+                        std::cout << ")\n";
+                        auto print_detail = [](const std::string& label,
+                                               const SynthesisDetail& d) {
+                            std::cout << "        " << label
+                                      << ": GPU=" << std::setprecision(1) << d.gpu_exec_ms << " ms"
+                                      << " (pre=" << std::setprecision(1) << d.precompute_ms
+                                      << " gfp=" << std::setprecision(1)
+                                      << (d.gfp_ms - d.precompute_ms) << ")"
+                                      << "  iters=" << d.iterations
+                                      << "  basis=" << d.basis_size
+                                      << "  safe=" << d.safe_cells << "/" << d.total_cells
+                                      << "\n";
+                        };
+                        if (resynth_wait)
+                            print_detail("Z_wait", dual_->synth_wait->last_detail());
+                        if (resynth_go)
+                            print_detail("Z_go  ", dual_->synth_go->last_detail());
+                    }
+                } else if (sim_cfg.verbose) {
+                    std::cout << "  [2] Synthesis: skipped (dual, Δ1="
                               << std::setprecision(2)
                               << (std::isnan(last_param_val) ? 0.0 : std::fabs(param_val - last_param_val))
+                              << " Δ2="
+                              << (std::isnan(last_param_val_2) ? 0.0 : std::fabs(param_val_2 - last_param_val_2))
                               << ")\n";
-                } else {
-                    std::cout << "  [2] Synthesis: one-shot (no param)\n";
+                }
+            } else {
+                // Single synthesis mode
+                bool do_resynth = false;
+                if (has_param) {
+                    if (sim_cfg.resynth_policy == "always") {
+                        do_resynth = true;
+                    } else if (sim_cfg.resynth_policy == "never") {
+                        do_resynth = false;
+                    } else {
+                        do_resynth = std::isnan(last_param_val) ||
+                                     std::fabs(param_val - last_param_val) > sim_cfg.resynth_thresh;
+                    }
+                }
+                if (do_resynth) {
+                    double synth_ms = synth_->synthesize(param_val, safe_set_);
+                    entry.synth_ms = synth_ms;
+                    last_param_val = param_val;
+
+                    if (sim_cfg.verbose) {
+                        const auto& d = synth_->last_detail();
+                        std::cout << "  [2] Synthesis: " << std::setprecision(1) << synth_ms << " ms  (RESYNTHESIZED)\n"
+                                  << "        GPU kernels : " << std::setprecision(1) << d.gpu_exec_ms << " ms"
+                                  << "  (" << d.iterations << " iters)\n"
+                                  << "        Bitmap xfer : " << std::setprecision(2) << d.transfer_ms << " ms\n"
+                                  << "        Basis: " << d.basis_size
+                                  << "  Safe: " << d.safe_cells << "/" << d.total_cells
+                                  << " (" << std::setprecision(1)
+                                  << (d.total_cells > 0 ? 100.0 * d.safe_cells / d.total_cells : 0.0) << "%)\n";
+                    }
+                } else if (sim_cfg.verbose) {
+                    if (has_param) {
+                        std::cout << "  [2] Synthesis: skipped (Δ="
+                                  << std::setprecision(2)
+                                  << (std::isnan(last_param_val) ? 0.0 : std::fabs(param_val - last_param_val))
+                                  << ")\n";
+                    } else {
+                        std::cout << "  [2] Synthesis: one-shot (no param)\n";
+                    }
                 }
             }
 
             // 3. Check current safety
             auto q_t0 = std::chrono::high_resolution_clock::now();
             entry.is_safe = safe_set_.is_safe(state);
+            entry.wait_safe = safe_set_.is_safe_wait(state.data());
+            entry.go_safe = safe_set_.is_safe_go(state.data());
             auto q_t1 = std::chrono::high_resolution_clock::now();
             entry.query_ns = std::chrono::duration<double, std::nano>(q_t1 - q_t0).count();
 
@@ -312,7 +410,7 @@ private:
         ofs << "time";
         for (int d = 0; d < dyn_->nx(); ++d) ofs << ",x" << d;
         for (int d = 0; d < dyn_->nu(); ++d) ofs << ",u" << d;
-        ofs << ",param_value,is_safe,safe_s_lo,safe_s_hi,query_ns,synth_ms,ctrl_ms,basis_size,safe_frac\n";
+        ofs << ",param_value,param_value_2,is_safe,wait_safe,go_safe,safe_s_lo,safe_s_hi,query_ns,synth_ms,synth_wait_ms,synth_go_ms,ctrl_ms,basis_size,safe_frac\n";
 
         // Data
         for (const auto& e : log) {
@@ -324,11 +422,16 @@ private:
                 ofs << "," << (d < e.control.size() ? e.control[d] : 0.0);
             }
             ofs << "," << e.param_value
+                << "," << e.param_value_2
                 << "," << (e.is_safe ? 1 : 0)
+                << "," << (e.wait_safe ? 1 : 0)
+                << "," << (e.go_safe ? 1 : 0)
                 << "," << e.safe_s_lo
                 << "," << e.safe_s_hi
                 << "," << e.query_ns
                 << "," << e.synth_ms
+                << "," << e.synth_wait_ms
+                << "," << e.synth_go_ms
                 << "," << e.ctrl_ms
                 << "," << e.basis_size
                 << "," << e.safe_frac
@@ -372,6 +475,7 @@ private:
     std::shared_ptr<SynthesisBackend>   synth_;
     std::shared_ptr<Sensor>             sensor_;
     GridDesc                            state_grid_;
+    std::optional<DualSynthState>       dual_;
 };
 
 }  // namespace rt_ctrl
