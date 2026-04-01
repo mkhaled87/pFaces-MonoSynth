@@ -18,3 +18,27 @@ build/
 *.ipdb
 *.iobj
 desktop.ini
+
+# pFaces generated
+*.render_defaults
+*.render_schema
+
+# Build artifacts
+__pycache__/
+
+# Data / output artifacts
+*.csv
+*.bin
+*.mp4
+*.gif
+*.pdf
+
+# LaTeX build artifacts
+*.aux
+*.nav
+*.out
+*.snm
+*.synctex.gz
+*.toc
+*.fdb_latexmk
+*.fls
