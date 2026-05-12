@@ -134,9 +134,10 @@ __kernel void precompute_transitions(
     const float x_res[@@STATE_DIM@@] = @@X_RES_ARRAY@@;
     const int x_priority[@@STATE_DIM@@] = @@X_PRIORITY_ARRAY@@;
     
+    const int N_grid[@@STATE_DIM@@] = @@GRID_SIZES_ARRAY@@;
     unsigned int x_numCells[@@STATE_DIM@@];
     for (int i = 0; i < @@STATE_DIM@@; ++i) {
-        x_numCells[i] = (unsigned int)ceil((x_max[i] - x_min[i]) / x_res[i]) + 1;
+        x_numCells[i] = (unsigned int)N_grid[i];
     }
     
     int x_idx[@@STATE_DIM@@];
@@ -155,8 +156,15 @@ __kernel void precompute_transitions(
     for (int i = 0; i < @@STATE_DIM@@; ++i) x_plus_idx[i] = -1;
     state_to_idx(x_plus, x_min, x_max, x_res, x_priority, x_numCells, x_plus_idx);
     
-    int base = gid * @@STATE_DIM@@;
-    for (int i = 0; i < @@STATE_DIM@@; ++i) {
-        next_state_table[base + i] = (unsigned int)x_plus_idx[i];
+    if (x_plus_idx[0] == -1) {
+        next_state_table[gid] = 0xFFFFFFFFu;
+        return;
     }
+    unsigned int flat_succ = 0;
+    unsigned int stride = 1;
+    for (int i = 0; i < @@STATE_DIM@@; ++i) {
+        flat_succ += (unsigned int)(x_plus_idx[i] - 1) * stride;
+        stride *= x_numCells[i];
+    }
+    next_state_table[gid] = flat_succ;
 }

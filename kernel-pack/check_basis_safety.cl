@@ -15,7 +15,7 @@
 
 kernel void check_basis_safety(
     __global const int* basis_flat_idx,
-    __global const int* next_state_table,
+    __global const unsigned int* next_state_table,
     __global const int* basis_list,
     __global const int* basis_list_size_ptr,
     __global int* unsafe_flags
@@ -30,14 +30,20 @@ kernel void check_basis_safety(
         return;
     }
 
-    int next_state[@@STATE_DIM@@];
-    for (int i = 0; i < @@STATE_DIM@@; ++i) {
-        next_state[i] = next_state_table[flat_idx * @@STATE_DIM@@ + i];
-    }
-
-    if (next_state[0] == -1) {
+    unsigned int flat_succ = next_state_table[flat_idx];
+    if (flat_succ == 0xFFFFFFFFu) {
         unsafe_flags[basis_idx] = 1;
         return;
+    }
+
+    const int N_grid[@@STATE_DIM@@] = @@GRID_SIZES_ARRAY@@;
+    int next_state[@@STATE_DIM@@];
+    {
+        unsigned int tmp = flat_succ;
+        for (int i = 0; i < @@STATE_DIM@@; ++i) {
+            next_state[i] = (int)(tmp % (unsigned int)N_grid[i]) + 1;
+            tmp /= (unsigned int)N_grid[i];
+        }
     }
 
     int unsafe = 1;

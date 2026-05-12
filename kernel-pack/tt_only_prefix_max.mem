@@ -2,7 +2,7 @@ tt_only_prefix_max {
     threshold_table {
         MemConfig = "pfaces_rw_global";
         isNewOrResident = "false";
-        residentFuncIdx = "3";
+        residentFuncIdx = "2";
         residentFuncArgIdx = "2";
     }
     sweep_params {

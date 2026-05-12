@@ -4,6 +4,7 @@ precompute_transitions {
         directionWriteOrRead = "true";
         HostDoWrite = "true";
         HostDoRead = "true";
+        baseTypeSize = "4";
     }
     runtime_params {
         MemConfig = "pfaces_rw_global";

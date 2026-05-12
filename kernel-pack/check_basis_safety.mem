@@ -8,6 +8,7 @@ check_basis_safety {
         isNewOrResident = "false";
         residentFuncIdx = "0";
         residentFuncArgIdx = "0";
+        baseTypeSize = "4";
     }
     basis_list {
         MemConfig = "pfaces_rw_global";

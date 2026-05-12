@@ -819,7 +819,9 @@ defaultConfiguration::defaultConfiguration()
 	m_schema[810] = "use_threshold_table = boolean";
 	m_schema[811] = "use_tt_only = boolean";
 	m_schema[812] = "use_inline_dynamics = boolean";
-	m_schema[813] = 0;
+	m_schema[813] = "use_prefix_sweep = boolean";
+	m_schema[814] = "threshold_d_star = int";
+	m_schema[815] = 0;
 
 
 	std::stringstream m_str;
@@ -858,7 +860,7 @@ defaultConfiguration::defaultConfiguration()
 	m_str << "# -------------------------\n";
 	m_str << "# The (data) tells the tool which memory model to ";
 	m_str << "use when saving results\n";
-	m_str << "# use the values : raw | bits | bitmap | bdd\n";
+	m_str << "# use the values : raw | bits | bdd\n";
 	m_str << "data = \"raw\";\n";
 	m_str << "save_transitions = \"false\";\n";
 	m_str << "save_controller = \"true\";\n";
@@ -883,6 +885,8 @@ defaultConfiguration::defaultConfiguration()
 	m_str << "use_threshold_table = \"true\";\n";
 	m_str << "use_tt_only = \"false\";\n";
 	m_str << "use_inline_dynamics = \"false\";\n";
+	m_str << "use_prefix_sweep = \"false\";\n";
+	m_str << "threshold_d_star = \"-1\";\n";
 	m_str << "\n";
 	m_str << "\n";
 	m_str << "# State/Input sets\n";
@@ -1593,6 +1597,23 @@ void configReader::load_values() {
 			m_use_inline_dynamics = false;
 		}
 
+		try {
+			m_use_prefix_sweep = m_spConfigObject->readConfigValueBool("use_prefix_sweep");
+		} catch (...) {
+			// Off by default: the monotone boundary handling assumption
+			// (Assumption 1 in the paper) makes the prefix-max sweep a
+			// no-op for well-posed monotone systems, so we save the
+			// additional O(N^(d-1)) per-iteration work.
+			m_use_prefix_sweep = false;
+		}
+
+		try {
+			m_threshold_d_star = m_spConfigObject->readConfigValueInt("threshold_d_star");
+		} catch (...) {
+			// -1 means "auto-select d* as widest dimension" (legacy behavior)
+			m_threshold_d_star = -1;
+		}
+
 		m_statedim = m_spConfigObject->readConfigValueInt("states.dim");
 		m_stateeta = m_spConfigObject->readConfigValueString("states.eta");
 		m_statelb = m_spConfigObject->readConfigValueString("states.lb");
@@ -1747,7 +1768,7 @@ int configReader::validate_values() {
 	}
 
 	std::string data(m_data);
-	if (!(data == "raw" || data == "bits" || data == "bitmap" || data == "bdd")) {
+	if (!(data == "raw" || data == "bits" || data == "bdd")) {
 		sserrors << "\t-Data should be: raw, bitset or bdd." << std::endl;
 		ret = VALIDATE_RESULT_FAILED;
 	}
@@ -1771,6 +1792,11 @@ int configReader::validate_values() {
 
 		if (vSsEta.size() != m_statedim || vSsLb.size() != m_statedim || vSsUb.size() != m_statedim || vSsErr.size() != m_statedim) {
 			sserrors << "\t-Invalid number of elements in one or more of the state space parameters." << std::endl;
+			ret = VALIDATE_RESULT_FAILED;
+		}
+
+		if (m_threshold_d_star < -1 || m_threshold_d_star >= (int)m_statedim) {
+			sserrors << "\t-threshold_d_star must be -1 (auto) or in [0, states.dim-1]." << std::endl;
 			ret = VALIDATE_RESULT_FAILED;
 		}
 	}

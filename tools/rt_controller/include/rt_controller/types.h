@@ -42,7 +42,7 @@ struct GridDesc {
     std::vector<double> lb;                ///< Lower bound per dimension
     std::vector<double> ub;                ///< Upper bound per dimension
     std::vector<double> eta;               ///< Cell width per dimension
-    int              total_cells = 0;      ///< Product of all sizes
+    int64_t          total_cells = 0;      ///< Product of all sizes
 
     /// Compute flat index from multi-index (column-major: dim 0 varies fastest)
     inline int flatten(const int* idx) const {
@@ -82,7 +82,7 @@ struct GridDesc {
     /// Recompute total_cells from sizes
     void recompute_total() {
         total_cells = 1;
-        for (int d = 0; d < n_dim; ++d) total_cells *= sizes[d];
+        for (int d = 0; d < n_dim; ++d) total_cells *= (int64_t)sizes[d];
     }
 };
 

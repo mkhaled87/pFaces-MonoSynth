@@ -1,15 +1,13 @@
 /**
  * @file safe_set.h
- * @brief Bitmap-based safe set with O(1) queries and O(N^n · n) construction.
+ * @brief Safe set with O(1) threshold-table queries.
  *
  * The safe set K_* = ↓B is the downward closure of an antichain basis B
  * under the component-wise partial order induced by the monotone system's
- * priority ordering.  This module stores K_* as a dense bitmap for O(1)
- * membership queries and constructs it from B via an N-dimensional sweep
- * (prefix-OR) algorithm that runs in O(N^n · n) — linear in grid size
- * times number of dimensions — regardless of |B|.
- *
- * Memory for a 3D 81×49×61 grid: 242,109 bits ≈ 30 KB (fits in L1 cache).
+ * priority ordering.  This module stores K_* as a threshold table for O(1)
+ * membership queries.  The threshold table is indexed by all dimensions
+ * except d* (the dimension with the most grid cells) and stores the maximum
+ * safe height along d* for each column.
  *
  * Thread safety: read-only queries are safe from any thread.  Mutation
  * (rebuild) must be externally serialized.
@@ -49,7 +47,6 @@ public:
     void init(const GridDesc& grid, const std::vector<int>& priorities) {
         grid_       = grid;
         priorities_ = priorities;
-        bitmap_.assign(grid_.total_cells, 0);
         basis_.clear();
     }
 
@@ -73,26 +70,7 @@ public:
         basis_ = basis;
     }
 
-    /**
-     * Set bitmap directly from an external uint8 array (zero-copy from pFaces buffer).
-     * Skips basis storage and bitmap construction entirely.
-     * @param data   Pointer to uint8 bitmap array.
-     * @param size   Number of cells (must match grid_.total_cells).
-     */
-    void set_bitmap_direct(const uint8_t* data, int size) {
-        if (size != grid_.total_cells) {
-            std::cerr << "[SafeSet] WARNING: bitmap size mismatch ("
-                      << size << " vs " << grid_.total_cells << ")\n";
-        }
-        int n = std::min(size, grid_.total_cells);
-        bitmap_.assign(data, data + n);
-        // Count safe cells for statistics
-        int safe = 0;
-        for (auto b : bitmap_) safe += b;
-        last_build_ms_ = 0.0;  // Built externally
-    }
-
-    /// Set basis size for reporting (when bitmap is set externally)
+    /// Set basis size for reporting (when TT is set externally)
     void set_basis_size_hint(int n) { basis_size_hint_ = n; }
 
     /**
@@ -216,48 +194,67 @@ public:
         auto t0 = std::chrono::high_resolution_clock::now();
 
         const int n_dim = grid_.n_dim;
-        const int total = grid_.total_cells;
+        const int64_t total = grid_.total_cells;
 
-        // Zero the bitmap
-        std::fill(bitmap_.begin(), bitmap_.end(), static_cast<uint8_t>(0));
+        // Allocate temporary bitmap for sweep
+        std::vector<uint8_t> bitmap(total, 0);
 
         // Step 1: Mark basis elements
         for (const auto& b : basis_) {
             int flat = grid_.flatten(b.data());
             if (flat >= 0 && flat < total) {
-                bitmap_[flat] = 1;
+                bitmap[flat] = 1;
             }
         }
 
         // Step 2: Prefix-OR sweep per dimension
-        //
-        // Internal monotone order: lower indices are always safer.
-        // Sweep HIGH → LOW in every dimension to propagate safety.
-        //
-        // Implementation: decompose flat index into
-        //   flat = outer * (sizes[d] * stride) + coord_d * stride + inner
-        // where stride = product of sizes[0..d-1],
-        //       outer  = total / (sizes[d] * stride)
-
         for (int d = 0; d < n_dim; ++d) {
-            // Compute stride for dimension d
             int stride = 1;
             for (int k = 0; k < d; ++k) stride *= grid_.sizes[k];
 
             int dim_size = grid_.sizes[d];
             int outer = total / (dim_size * stride);
 
-            // Sweep from coord = dim_size-2 down to 0
             for (int i_outer = 0; i_outer < outer; ++i_outer) {
                 for (int c = dim_size - 2; c >= 0; --c) {
                     for (int i_inner = 0; i_inner < stride; ++i_inner) {
                         int flat = i_outer * dim_size * stride + c * stride + i_inner;
-                        int flat_above = flat + stride;  // coord c+1
-                        bitmap_[flat] |= bitmap_[flat_above];
+                        int flat_above = flat + stride;
+                        bitmap[flat] |= bitmap[flat_above];
                     }
                 }
             }
         }
+
+        // Step 3: Build threshold table from bitmap
+        tt_d_star_ = 0;
+        for (int d = 1; d < n_dim; ++d) {
+            if (grid_.sizes[d] > grid_.sizes[tt_d_star_]) tt_d_star_ = d;
+        }
+        tt_key_strides_.resize(n_dim, 0);
+        int tbl_stride = 1;
+        for (int d = 0; d < n_dim; ++d) {
+            if (d == tt_d_star_) continue;
+            tt_key_strides_[d] = tbl_stride;
+            tbl_stride *= grid_.sizes[d];
+        }
+        tt_size_ = tbl_stride;
+        tt_data_.assign(tt_size_, 0);
+
+        for (int flat = 0; flat < total; ++flat) {
+            if (!bitmap[flat]) continue;
+            int idx[MAX_DIM];
+            grid_.unflatten(flat, idx);
+            int key_flat = 0;
+            for (int d = 0; d < n_dim; ++d) {
+                if (d == tt_d_star_) continue;
+                key_flat += idx[d] * tt_key_strides_[d];
+            }
+            tt_data_[key_flat] = std::max(tt_data_[key_flat], idx[tt_d_star_] + 1);
+        }
+        tt_safe_cells_ = 0;
+        for (int i = 0; i < tt_size_; ++i) tt_safe_cells_ += tt_data_[i];
+        has_tt_ = true;
 
         auto t1 = std::chrono::high_resolution_clock::now();
         last_build_ms_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -270,17 +267,14 @@ public:
 
     /// Check if a grid-index cell is in the safe set.  O(1).
     inline bool is_safe_grid(const int* idx) const {
-        if (has_tt_) {
-            int key_flat = 0;
-            for (int d = 0; d < grid_.n_dim; ++d) {
-                if (d == tt_d_star_) continue;
-                key_flat += idx[d] * tt_key_strides_[d];
-            }
-            int thresh = (key_flat >= 0 && key_flat < tt_size_) ? tt_data_[key_flat] : 0;
-            return (thresh > 0 && idx[tt_d_star_] < thresh);
+        if (!has_tt_) return false;
+        int key_flat = 0;
+        for (int d = 0; d < grid_.n_dim; ++d) {
+            if (d == tt_d_star_) continue;
+            key_flat += idx[d] * tt_key_strides_[d];
         }
-        int flat = grid_.flatten(idx);
-        return (flat >= 0 && flat < grid_.total_cells) && bitmap_[flat];
+        int thresh = (key_flat >= 0 && key_flat < tt_size_) ? tt_data_[key_flat] : 0;
+        return (thresh > 0 && idx[tt_d_star_] < thresh);
     }
 
     /// Continuous state → grid index, conservatively rounded toward the
@@ -417,41 +411,13 @@ public:
         int idx[MAX_DIM] = {};
         state_to_grid_conservative(state, idx);
 
-        // Threshold table fast path: avoid bitmap scan
-        if (has_tt_) {
-            double lo = std::numeric_limits<double>::quiet_NaN();
-            double hi = std::numeric_limits<double>::quiet_NaN();
-            bool max_is_good = (priorities_.empty() || priorities_[dim] == 0);
-            for (int i = 0; i < grid_.sizes[dim]; ++i) {
-                idx[dim] = i;
-                if (is_safe_grid(idx)) {
-                    double val = max_is_good
-                        ? (grid_.ub[dim] - i * grid_.eta[dim])
-                        : (grid_.lb[dim] + i * grid_.eta[dim]);
-                    if (std::isnan(lo)) lo = val;
-                    hi = val;
-                }
-            }
-            idx[dim] = 0;  // restore
-            return {lo, hi};
-        }
-
-        // Compute base flat index with dim set to 0
-        int saved = idx[dim];
-        idx[dim]  = 0;
-        int base_flat = grid_.flatten(idx);
-        idx[dim]  = saved;
-
-        // Stride for the scan dimension (dim 0 fastest)
-        int stride = 1;
-        for (int d = 0; d < dim; ++d) stride *= grid_.sizes[d];
-
+        // Scan along dim using threshold table
         double lo = std::numeric_limits<double>::quiet_NaN();
         double hi = std::numeric_limits<double>::quiet_NaN();
+        bool max_is_good = (priorities_.empty() || priorities_[dim] == 0);
         for (int i = 0; i < grid_.sizes[dim]; ++i) {
-            int flat = base_flat + i * stride;
-            if (flat >= 0 && flat < grid_.total_cells && bitmap_[flat]) {
-                bool max_is_good = (priorities_.empty() || priorities_[dim] == 0);
+            idx[dim] = i;
+            if (is_safe_grid(idx)) {
                 double val = max_is_good
                     ? (grid_.ub[dim] - i * grid_.eta[dim])
                     : (grid_.lb[dim] + i * grid_.eta[dim]);
@@ -459,6 +425,7 @@ public:
                 hi = val;
             }
         }
+        idx[dim] = 0;  // restore
         return {lo, hi};
     }
 
@@ -472,19 +439,15 @@ public:
     }
     int count_safe_cells() const {
         if (is_dual_proxy_) {
-            // Not meaningful for dual proxy; return average of sub-SafeSets
             int ca = dual_a_ ? dual_a_->count_safe_cells() : 0;
             int cb = dual_b_ ? dual_b_->count_safe_cells() : 0;
             return (ca + cb) / 2;
         }
-        if (has_tt_) return tt_safe_cells_;
-        int count = 0;
-        for (auto b : bitmap_) count += b;
-        return count;
+        return tt_safe_cells_;
     }
 
     double last_build_ms() const { return last_build_ms_; }
-    int total_cells() const { return grid_.total_cells; }
+    int64_t total_cells() const { return grid_.total_cells; }
     double safe_fraction() const {
         if (is_dual_proxy_) {
             double fa = dual_a_ ? dual_a_->safe_fraction() : 0.0;
@@ -497,55 +460,9 @@ public:
     }
 
     const GridDesc& grid() const { return grid_; }
-    const std::vector<uint8_t>& bitmap() const { return bitmap_; }
 
     // -----------------------------------------------------------------------
-    // Intersection of two safe sets (dual-synthesis scenarios)
-    // -----------------------------------------------------------------------
-
-    /**
-     * Build intersection bitmap from two sub-SafeSets with a coordinate offset.
-     *
-     * For each cell (s, v, r1) on THIS object's grid:
-     *   bitmap[cell] = ss_wait.is_safe(s, v, r1)
-     *               && ss_go.is_safe(s, v, r1 - d_sep)
-     *
-     * The sub-SafeSets live on their own grids; their is_safe() handles
-     * clamping for out-of-domain points (conservative-correct for monotone sets).
-     *
-     * @param ss_go   "Go first" safe set (Z_go, from turn_ego_first synthesis).
-     * @param ss_wait "Wait" safe set (Z_wait, from turn_oncoming_first synthesis).
-     * @param d_sep   Separation distance between oncoming vehicles (>= 0).
-     * @return Build time in milliseconds.
-     */
-    double build_intersection(const SafeSet& ss_go, const SafeSet& ss_wait,
-                              double d_sep) {
-        auto t0 = std::chrono::high_resolution_clock::now();
-
-        for (int flat = 0; flat < grid_.total_cells; ++flat) {
-            int idx[MAX_DIM];
-            grid_.unflatten(flat, idx);
-
-            double x[MAX_DIM];
-            grid_to_state_internal(idx, x);
-
-            double x_go[MAX_DIM];
-            x_go[0] = x[0];
-            x_go[1] = x[1];
-            x_go[2] = x[2] - d_sep;
-
-            bitmap_[flat] = (ss_wait.is_safe(x) && ss_go.is_safe(x_go))
-                            ? static_cast<uint8_t>(1)
-                            : static_cast<uint8_t>(0);
-        }
-
-        auto t1 = std::chrono::high_resolution_clock::now();
-        last_build_ms_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        return last_build_ms_;
-    }
-
-    // -----------------------------------------------------------------------
-    // Dual proxy mode — two independent sub-SafeSets (no bitmap)
+    // Dual proxy mode — two independent sub-SafeSets
     // -----------------------------------------------------------------------
 
     /**
@@ -586,8 +503,7 @@ public:
         onc_fulldim_a_    = onc_fulldim_a;
         onc_fulldim_b_    = onc_fulldim_b;
         bypass_threshold_ = bypass_threshold;
-        // Don't allocate bitmap — queries delegate to sub-SafeSets
-        bitmap_.clear();
+        // No bitmap — queries delegate to sub-SafeSets
         basis_.clear();
     }
 
@@ -598,27 +514,6 @@ public:
     SafeSet* dual_ss_b() { return dual_b_; }
     const SafeSet* dual_ss_a() const { return dual_a_; }
     const SafeSet* dual_ss_b() const { return dual_b_; }
-
-    // -----------------------------------------------------------------------
-    // Serialization
-    // -----------------------------------------------------------------------
-    void save_bitmap(const std::string& path) const {
-        std::ofstream ofs(path, std::ios::binary);
-        int total = grid_.total_cells;
-        ofs.write(reinterpret_cast<const char*>(&total), sizeof(int));
-        ofs.write(reinterpret_cast<const char*>(bitmap_.data()), total);
-    }
-
-    bool load_bitmap(const std::string& path) {
-        std::ifstream ifs(path, std::ios::binary);
-        if (!ifs.is_open()) return false;
-        int total = 0;
-        ifs.read(reinterpret_cast<char*>(&total), sizeof(int));
-        if (total != grid_.total_cells) return false;
-        bitmap_.resize(total);
-        ifs.read(reinterpret_cast<char*>(bitmap_.data()), total);
-        return true;
-    }
 
 private:
     inline void grid_to_state_internal(const int* idx, double* x) const {
@@ -632,7 +527,6 @@ private:
 
     GridDesc              grid_;
     std::vector<int>      priorities_;
-    std::vector<uint8_t>  bitmap_;
     std::vector<std::vector<int>> basis_;
     double                last_build_ms_ = 0.0;
     int                   basis_size_hint_ = 0;

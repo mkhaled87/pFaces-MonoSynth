@@ -38,20 +38,9 @@ namespace mono_synth {
 #define KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_UNSAFE_FLAGS_NAME "unsafe_flags"
 #define KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_UNSAFE_FLAGS_IDX 4
 
-// Bitmap construction kernel (GPU)
-#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_NAME "build_bitmap"
-#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_IDX 2
-#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_NUM_ARGS 3
-#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BITMAP_NAME "bitmap"
-#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BITMAP_IDX 0
-#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BASIS_LIST_NAME "basis_list"
-#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BASIS_LIST_IDX 1
-#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BASIS_LIST_SIZE_NAME "basis_list_size_ptr"
-#define KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BASIS_LIST_SIZE_IDX 2
-
 // TT-only column update kernel (GPU)
 #define KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNC_NAME "tt_only_column_update"
-#define KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNC_IDX 3
+#define KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNC_IDX 2
 #define KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNC_NUM_ARGS 5
 #define KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNCARG_NEXT_STATE_TABLE_IDX 0
 #define KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNCARG_TT_IN_IDX 1
@@ -61,13 +50,10 @@ namespace mono_synth {
 
 // TT-only prefix-max sweep kernel (GPU)
 #define KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNC_NAME "tt_only_prefix_max"
-#define KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNC_IDX 4
+#define KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNC_IDX 3
 #define KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNC_NUM_ARGS 2
 #define KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNCARG_TT_IDX 0
 #define KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNCARG_SWEEP_PARAMS_IDX 1
-
-// DataPool index for the GPU bitmap buffer
-#define BITMAP_DATA_POOL_IDX 6
 
 
 /**********************************************************/
@@ -90,10 +76,6 @@ private:
   std::shared_ptr<pfacesDeviceWriteJob> job_writeBasisFlatIdx;
   std::shared_ptr<pfacesDeviceWriteJob> job_writeBasisList;
   std::shared_ptr<pfacesDeviceWriteJob> job_writeBasisListSize;
-
-  /* GPU Bitmap Jobs */
-  std::vector<std::shared_ptr<pfacesDeviceExecuteJob>> job_execBuildBitmap;
-  std::shared_ptr<pfacesDeviceReadJob> job_readBitmap;
 
   /* GPU TT-only Jobs */
   std::vector<std::shared_ptr<pfacesDeviceExecuteJob>> job_execTTColumnUpdate;
@@ -127,11 +109,6 @@ private:
   std::shared_ptr<pfacesInstruction> instr_hostFuncBenchmarkStart = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_hostFuncBenchmarkNext = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_jumpToBenchmarkStart = std::make_shared<pfacesInstruction>();
-
-  /* GPU Bitmap Instructions */
-  std::shared_ptr<pfacesInstruction> instr_readBitmap = std::make_shared<pfacesInstruction>();
-  std::shared_ptr<pfacesInstruction> instr_hostFuncPrepareBitmapGPU = std::make_shared<pfacesInstruction>();
-  std::shared_ptr<pfacesInstruction> instr_hostFuncCopyBitmapFromGPU = std::make_shared<pfacesInstruction>();
 
   /* GPU TT-only Instructions */
   std::shared_ptr<pfacesInstruction> instr_writeTTIn = std::make_shared<pfacesInstruction>();
@@ -175,9 +152,6 @@ public:
   static size_t processSafeSetUpdate(void* pPackedKernel, void* pPackedParallelProgram);
   static size_t benchmarkStart(void* pPackedKernel, void* pPackedParallelProgram);
   static size_t benchmarkNext(void* pPackedKernel, void* pPackedParallelProgram);
-  static size_t prepareBitmapGPU(void* pPackedKernel, void* pPackedParallelProgram);
-  static size_t copyBitmapFromGPU(void* pPackedKernel, void* pPackedParallelProgram);
-  
   /* host functions for GPU TT-only iteration */
   static size_t initTTGPU(void* pPackedKernel, void* pPackedParallelProgram);
   static size_t prepareTTGPUIteration(void* pPackedKernel, void* pPackedParallelProgram);
@@ -192,11 +166,9 @@ public:
   int updateSafeSet(int* unsafe_flags);
   void rebuildCoordIndex();
   void buildThresholdTable();
-  void cpuSafetyCheck(const int* next_state_table, int* unsafe_flags);
+  void cpuSafetyCheck(const unsigned int* next_state_flat, int* unsafe_flags);
 
   /* public accessors for direct SDK integration */
-  const std::vector<uint8_t>& getBitmap() const { return m_bitmap; }
-  int getBitmapSize() const { return (int)x_flat_width; }
   int getBasisSize() const { return m_safe_set_size; }
   const int* getBasisData() const { return m_safe_set_basis; }
   int getStateDim() const { return m_ss_dim; }
@@ -214,7 +186,6 @@ public:
   }
   void setRuntimeParam0(float value) { m_runtime_param0 = value; }
   float getRuntimeParam0() const { return m_runtime_param0; }
-  void setSkipBitmapBuild(bool v) { m_skip_bitmap_build = v; }
   void setSkipPrecompute(bool v) { m_skip_precompute = v; }
 
   /* threshold table accessors for direct RT controller integration */
@@ -222,8 +193,8 @@ public:
   int getThresholdTableSize() const { return m_threshold_table_size; }
   int getThresholdDStar() const { return m_threshold_d_star; }
   const std::vector<int>& getThresholdKeyStrides() const { return m_threshold_orig_to_key_stride; }
-  int getSafeCellCount() const {
-    int total = 0;
+  int64_t getSafeCellCount() const {
+    int64_t total = 0;
     for (int i = 0; i < m_threshold_table_size; ++i) total += m_threshold_table[i];
     return total;
   }
@@ -231,7 +202,6 @@ public:
   /* Phase timing (filled by host functions in instruction list) */
   double m_precompute_ms = 0.0;
   double m_gfp_total_ms = 0.0;
-  double m_bitmap_total_ms = 0.0;
   std::chrono::high_resolution_clock::time_point m_phase_timer;
 
   /* safe set state - will be initialized from config */
@@ -248,7 +218,6 @@ public:
   int m_ss_dim = 2;
   std::chrono::high_resolution_clock::time_point m_compute_start;
   std::chrono::high_resolution_clock::time_point m_iteration_start;
-  std::chrono::high_resolution_clock::time_point m_bitmap_build_start;
   
   // Basis evolution recording
   bool m_record_basis_evolution = false;
@@ -292,11 +261,6 @@ public:
   double m_benchmark_total_time_ms = 0;
   int m_benchmark_total_iterations = 0;
 
-    /* safe-set bitmap from GPU build_bitmap kernel; direct copy (0-based,
-      row-major, same convention as kernel and rt_controller) */
-  std::vector<uint8_t> m_bitmap;
-  double m_bitmap_build_total_ms = 0.0;
-  
   /* Threshold table for CPU-side O(1) safety check */
   bool m_use_threshold_table = true;
   std::vector<int> m_threshold_table;
@@ -310,8 +274,9 @@ public:
   bool m_use_tt_only = false;
   bool m_use_tt_only_gpu = true;
   bool m_use_inline_dynamics = false;
+  bool m_use_prefix_sweep = false;  // Assumption 1 makes it a no-op by default
   bool m_tt_only_changed = false;
-  void ttOnlyOneIteration(const int* next_state_table);
+  void ttOnlyOneIteration(const unsigned int* next_state_flat);
   void extractBasisFromThresholdTable();
   
   /* GPU TT-only iteration state */
@@ -321,7 +286,6 @@ public:
   
   /* direct-mode flags */
   bool m_skip_cache = false;
-  bool m_skip_bitmap_build = false;
   bool m_skip_precompute = false;
   float m_runtime_param0 = 0.0f;  // 0 = use compile-time default from dynamics file
 

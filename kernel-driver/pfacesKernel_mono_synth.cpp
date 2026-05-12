@@ -28,7 +28,7 @@ size_t pfacesKernel_mono_synth::saveTransitionTable(void* pPackedKernel, void* p
 	const char* pDataTransitionTable = pParallelProgram->m_dataPool[0].first;
 	int ss_dim = ((pfacesKernel_mono_synth*)(pPackedKernel))->m_spCfg->getSsDim();
 	int number_of_states = ((pfacesKernel_mono_synth*)(pPackedKernel))->x_flat_width;
-	int number_of_elements = number_of_states*ss_dim;
+	int number_of_elements = number_of_states;
 
 	// save to file
 	const char* file_path = ((pfacesKernel_mono_synth*)(pPackedKernel))->cache_file;
@@ -36,7 +36,7 @@ size_t pfacesKernel_mono_synth::saveTransitionTable(void* pPackedKernel, void* p
 	std::ofstream cache_out(file_path, std::ios::binary);
 	if (cache_out.good()) {
 		cache_out.write(reinterpret_cast<const char*>(&number_of_states), sizeof(decltype(number_of_states)));
-		cache_out.write(pDataTransitionTable, number_of_elements*sizeof(cl_int));
+		cache_out.write(pDataTransitionTable, number_of_elements*sizeof(cl_uint));
 	}	
 
 	return 0;
@@ -54,14 +54,14 @@ size_t pfacesKernel_mono_synth::loadTransitionTable(void* pPackedKernel, void* p
 	const char* file_path = ((pfacesKernel_mono_synth*)(pPackedKernel))->cache_file;
 	int ss_dim = ((pfacesKernel_mono_synth*)(pPackedKernel))->m_spCfg->getSsDim();
 	int number_of_states = ((pfacesKernel_mono_synth*)(pPackedKernel))->x_flat_width;
-	int number_of_elements = number_of_states*ss_dim;
+	int number_of_elements = number_of_states;
 	std::ifstream cache_in(file_path, std::ios::binary);
 	if (cache_in.good()) {
 		int cached_total_states;
 		cache_in.read(reinterpret_cast<char*>(&cached_total_states), sizeof(int));
 		
 		if (cached_total_states == number_of_states) {
-			cache_in.read(reinterpret_cast<char*>(pDataTransitionTable), sizeof(cl_int) * number_of_elements);
+			cache_in.read(reinterpret_cast<char*>(pDataTransitionTable), sizeof(cl_uint) * number_of_elements);
 		}
 		cache_in.close();
 	}
@@ -193,8 +193,14 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	x_flat_width = pfacesFlatSpace::getFlatWidthFromConcreteSpace(
 		m_spCfg->getSsDim(), m_spCfg->getSsEta(), 
 		m_spCfg->getSsLb(), m_spCfg->getSsUb(), 
-		m_spCfg->getSsErr(), X_widthPerDimension).toInt();
+		m_spCfg->getSsErr(), X_widthPerDimension).toUnsignedLong();
 	
+	// Read mode flags early so they can be used for memory allocation decisions
+	m_use_tt_only = m_spCfg->isUseTTOnly();
+	m_use_tt_only_gpu = m_spCfg->isUseTTOnlyGPU();
+	m_use_inline_dynamics = m_spCfg->isUseInlineDynamics();
+	m_use_prefix_sweep = m_spCfg->isUsePrefixSweep();
+
 	// Auto-calculate MAX_COORD_VALUE as maximum grid size across all dimensions
 	MAX_COORD_VALUE = 0;
 	for (int i = 0; i < m_spCfg->getSsDim(); ++i) {
@@ -207,24 +213,32 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
     // Pointer initialization (actual pointers assigned in initSafeSet)
     m_safe_set_basis = nullptr;
 	m_safe_set_flat_indices = nullptr;
-    m_unsafe_mask = std::vector<unsigned char>(MAX_BASIS_ELEMENTS, 0);
-	m_neighbor_buffer = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM * MAX_STATE_DIM, 0);
-	m_neighbor_parent_dim = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM, 0);
-	m_neighbor_parent_coord = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM, 0);
-    m_seen_neighbors = std::vector<unsigned char>(x_flat_width, 0);
-	
-	// Allocate 3D array for coord_buckets
-	m_coord_buckets = std::vector<std::vector<std::vector<int>>>(MAX_STATE_DIM, std::vector<std::vector<int>>(MAX_COORD_VALUE, std::vector<int>(MAX_BUCKET_SIZE, 0)));
-	
-	// Allocate 2D array for bucket_sizes
-	m_bucket_sizes = std::vector<std::vector<int>>(MAX_STATE_DIM, std::vector<int>(MAX_COORD_VALUE, 0));
+    // Basis-method-only arrays: skip in TT-only GPU mode to avoid OOM
+    // (e.g. coord_buckets at N=10000: 3×10001×1M×4B = 120 GB)
+    if (!(m_use_tt_only && m_use_tt_only_gpu)) {
+        m_unsafe_mask = std::vector<unsigned char>(MAX_BASIS_ELEMENTS, 0);
+        m_neighbor_buffer = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM * MAX_STATE_DIM, 0);
+        m_neighbor_parent_dim = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM, 0);
+        m_neighbor_parent_coord = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM, 0);
+        m_seen_neighbors = std::vector<unsigned char>(x_flat_width, 0);
+        // Allocate 3D array for coord_buckets
+        m_coord_buckets = std::vector<std::vector<std::vector<int>>>(MAX_STATE_DIM, std::vector<std::vector<int>>(MAX_COORD_VALUE, std::vector<int>(MAX_BUCKET_SIZE, 0)));
+        // Allocate 2D array for bucket_sizes
+        m_bucket_sizes = std::vector<std::vector<int>>(MAX_STATE_DIM, std::vector<int>(MAX_COORD_VALUE, 0));
+    }
 
 	// Initialize threshold table for CPU-side O(1) safety check
 	m_use_threshold_table = m_spCfg->isUseThresholdTable();
-	m_threshold_d_star = 0;
-	for (int d = 1; d < (int)ssDim; ++d) {
-		if (X_widthPerDimension[d] > X_widthPerDimension[m_threshold_d_star])
-			m_threshold_d_star = d;
+	const int d_star_override = m_spCfg->getThresholdDStarOverride();
+	if (d_star_override >= 0 && d_star_override < (int)ssDim) {
+		m_threshold_d_star = d_star_override;
+		std::cout << "[MonoSynth] threshold_d_star override enabled: d*=" << m_threshold_d_star << std::endl;
+	} else {
+		m_threshold_d_star = 0;
+		for (int d = 1; d < (int)ssDim; ++d) {
+			if (X_widthPerDimension[d] > X_widthPerDimension[m_threshold_d_star])
+				m_threshold_d_star = d;
+		}
 	}
 	m_threshold_orig_to_key_stride.resize(ssDim, 0);
 	int tbl_stride = 1;
@@ -244,19 +258,23 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	}
 
 	// TT-only mode: entire GFP iteration via threshold table, no basis tracking
-	m_use_tt_only = m_spCfg->isUseTTOnly();
-	m_use_tt_only_gpu = m_spCfg->isUseTTOnlyGPU();
-	m_use_inline_dynamics = m_spCfg->isUseInlineDynamics();
+	// (flags already read above for early memory allocation decisions)
 	if (m_use_tt_only) {
 		m_use_threshold_table = true;  // TT-only implies threshold table
 		std::cout << "[MonoSynth] TT-only mode (" << (m_use_tt_only_gpu ? "GPU" : "CPU") << "): threshold-table-only GFP iteration (no neighbor generation)" << std::endl;
 		if (m_use_inline_dynamics && m_use_tt_only_gpu) {
 			std::cout << "[MonoSynth] Inline dynamics enabled: computing transitions on-the-fly during GFP (skipping precompute kernel)" << std::endl;
 		}
+		std::cout << "[MonoSynth] Prefix-max sweep: " << (m_use_prefix_sweep ? "ENABLED" : "disabled (relying on monotone boundary handling)") << std::endl;
 	}
 
 	// Setup basis evolution recording if enabled
 	m_record_basis_evolution = m_spCfg->isRecordBasisEvolution();
+
+	// Skip transition cache if save_transitions is false
+	if (!m_spCfg->isSaveTransitions()) {
+		m_skip_cache = true;
+	}
 
 	// Always write per-iteration timing stats (lightweight: one row per iteration)
 	m_iteration_stats_csv_file.open("iteration_stats.csv");
@@ -315,7 +333,12 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
         {KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_NEXT_STATE_TABLE_NAME,
          KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNCARG_RUNTIME_PARAMS_NAME},
         true);
-    precomputeArgs.m_baseTypeMultiple = { (size_t)(x_flat_width * ssDim), 4 };
+    precomputeArgs.m_baseTypeMultiple = { (size_t)x_flat_width, 4 };
+	// In inline dynamics mode, the transition table is unused. Allocate minimal buffer
+	// to avoid OOM on very large grids (3B+ cells × 3 dims × 4 bytes = 36+ GB).
+	if (m_use_inline_dynamics && m_use_tt_only && m_use_tt_only_gpu) {
+		precomputeArgs.m_baseTypeMultiple[0] = 1;
+	}
 	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME, precomputeArgs));
 	
 	updateParameters(getParameterList().first, getParameterList().second);
@@ -331,23 +354,13 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
           KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_BASIS_LIST_SIZE_NAME,
           KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_UNSAFE_FLAGS_NAME },
         true);
-    safetyArgs.m_baseTypeMultiple = { (size_t)MAX_BASIS_ELEMENTS, (size_t)(x_flat_width * ssDim), (size_t)(MAX_BASIS_ELEMENTS * ssDim), 1, (size_t)MAX_BASIS_ELEMENTS };
+    safetyArgs.m_baseTypeMultiple = { (size_t)MAX_BASIS_ELEMENTS, (size_t)x_flat_width, (size_t)(MAX_BASIS_ELEMENTS * ssDim), 1, (size_t)MAX_BASIS_ELEMENTS };
+	if (m_use_inline_dynamics && m_use_tt_only && m_use_tt_only_gpu) {
+		safetyArgs.m_baseTypeMultiple[1] = 1;
+	}
 	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_NAME, safetyArgs));
 
-	// GPU Bitmap kernel (func idx 2)
-	std::string bitmapMem = packPath + "build_bitmap.mem";
-	std::cout << "[MonoSynth] Loading memory fingerprint from: " << bitmapMem << std::endl;
-	auto bitmapArgs = pfacesKernelFunctionArguments::loadFromFile(
-		bitmapMem,
-		KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_NAME,
-		{ KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BITMAP_NAME,
-		  KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BASIS_LIST_NAME,
-		  KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNCARG_BASIS_LIST_SIZE_NAME },
-		true);
-	bitmapArgs.m_baseTypeMultiple = { (size_t)x_flat_width, (size_t)(MAX_BASIS_ELEMENTS * ssDim), 1 };
-	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_NAME, bitmapArgs));
-
-	// GPU TT-only column update kernel (func idx 3)
+	// GPU TT-only column update kernel (func idx 2)
 	std::string ttColMem = packPath + "tt_only_column_update.mem";
 	std::cout << "[MonoSynth] Loading memory fingerprint from: " << ttColMem << std::endl;
 	auto ttColArgs = pfacesKernelFunctionArguments::loadFromFile(
@@ -355,10 +368,13 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 		KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNC_NAME,
 		{ "next_state_table", "threshold_table_in", "threshold_table_out", "changed_flag", "runtime_params" },
 		true);
-	ttColArgs.m_baseTypeMultiple = { (size_t)(x_flat_width * ssDim), (size_t)m_threshold_table_size, (size_t)m_threshold_table_size, 1, 4 };
+	ttColArgs.m_baseTypeMultiple = { (size_t)x_flat_width, (size_t)m_threshold_table_size, (size_t)m_threshold_table_size, 1, 4 };
+	if (m_use_inline_dynamics && m_use_tt_only && m_use_tt_only_gpu) {
+		ttColArgs.m_baseTypeMultiple[0] = 1;
+	}
 	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNC_NAME, ttColArgs));
 
-	// GPU TT-only prefix-max sweep kernel (func idx 4)
+	// GPU TT-only prefix-max sweep kernel (func idx 3)
 	std::string ttPfxMem = packPath + "tt_only_prefix_max.mem";
 	std::cout << "[MonoSynth] Loading memory fingerprint from: " << ttPfxMem << std::endl;
 	auto ttPfxArgs = pfacesKernelFunctionArguments::loadFromFile(
@@ -378,10 +394,8 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 
 	// Distribute jobs
 	cl::NDRange ndrPrecompute{x_flat_width, 1, 1}, ndrCheckSafety{(size_t)MAX_BASIS_ELEMENTS, 1, 1}, ndrOffset{0, 0, 0};
-	cl::NDRange ndrBuildBitmap{x_flat_width, 1, 1};
 	job_execPrecomputeTransition = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_IDX, ndrPrecompute, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
     job_execCheckBasisSafety = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_IDX, ndrCheckSafety, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
-    job_execBuildBitmap = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_IDX, ndrBuildBitmap, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
 
 	if (beVerboseLevel >= 2)
 		parallelAdvisor.printTaskSchedulingReport(parallelProgram.getMachine(), { KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME }, { job_execPrecomputeTransition }, x_flat_width);
@@ -401,9 +415,6 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     job_writeBasisList = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 1, 5, 2);
     job_writeBasisListSize = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 1, 5, 3);
 
-    // GPU Bitmap IO job: read bitmap buffer from device (func2, 3 args, arg0)
-    job_readBitmap = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, 2, 3, 0);
-
     instr_readNextStateTable->setAsReadDeviceBuffer(job_readNextStateTable);
     instr_writeNextStateTable->setAsWriteDeviceBuffer(job_writeNextStateTable);
     instr_writeRuntimeParams->setAsWriteDeviceBuffer(job_writeRuntimeParams);
@@ -411,7 +422,6 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     instr_writeBasisFlatIdx->setAsWriteDeviceBuffer(job_writeBasisFlatIdx);
     instr_writeBasisList->setAsWriteDeviceBuffer(job_writeBasisList);
     instr_writeBasisListSize->setAsWriteDeviceBuffer(job_writeBasisListSize);
-    instr_readBitmap->setAsReadDeviceBuffer(job_readBitmap);
 
 	instr_BlockingSyncPoint->setAsBlockingSyncPoint();
     instr_logOff->setAsLogOff();
@@ -531,18 +541,22 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     if (m_use_tt_only && m_use_tt_only_gpu) {
         // === GPU TT-only iteration ===
         // Data pool indices for TT-only buffers:
-        //   func3 (tt_only_column_update): arg0=next_state_table(resident), arg1=tt_in(Pool[7]), arg2=tt_out(Pool[8]), arg3=changed_flag(Pool[9])
-        //   func4 (tt_only_prefix_max):    arg0=threshold_table(resident=func3.arg2=Pool[8]), arg1=sweep_params(Pool[10])
+        //   func2 (tt_only_column_update): arg0=next_state_table(resident), arg1=tt_in(Pool[6]), arg2=tt_out(Pool[7]), arg3=changed_flag(Pool[8])
+        //   func3 (tt_only_prefix_max):    arg0=threshold_table(resident=func2.arg2=Pool[7]), arg1=sweep_params(Pool[9])
         cl::NDRange ndrTTCol{(size_t)m_threshold_table_size, 1, 1};
         job_execTTColumnUpdate = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNC_IDX, ndrTTCol, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
 
-        // Distribute prefix-max jobs (one per key dimension, different NDRange each)
+        // Distribute prefix-max jobs (one per key dimension, different NDRange each).
+        // Only prepared if the sweep is enabled; otherwise the column update alone
+        // produces a lower-closed threshold (see Assumption 1 / paper Sec. III).
         const int num_key_dims = (int)m_threshold_key_dims.size();
-        job_execTTPrefixMax.resize(num_key_dims);
-        for (int ki = 0; ki < num_key_dims; ++ki) {
-            size_t num_fibers = (size_t)m_threshold_table_size / (size_t)m_threshold_key_dims[ki];
-            cl::NDRange ndrPfx{num_fibers, 1, 1};
-            job_execTTPrefixMax[ki] = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNC_IDX, ndrPfx, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
+        if (m_use_prefix_sweep) {
+            job_execTTPrefixMax.resize(num_key_dims);
+            for (int ki = 0; ki < num_key_dims; ++ki) {
+                size_t num_fibers = (size_t)m_threshold_table_size / (size_t)m_threshold_key_dims[ki];
+                cl::NDRange ndrPfx{num_fibers, 1, 1};
+                job_execTTPrefixMax[ki] = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNC_IDX, ndrPfx, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
+            }
         }
 
         // IO jobs for TT-only buffers
@@ -551,11 +565,13 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
         job_writeChangedFlag = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNC_IDX, KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNC_NUM_ARGS, KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNCARG_CHANGED_FLAG_IDX);
         job_readChangedFlag = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNC_IDX, KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNC_NUM_ARGS, KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNCARG_CHANGED_FLAG_IDX);
 
-        // Sweep params: one write job per key dimension
-        // We reuse the same buffer but write different params each time
-        job_writeSweepParams.resize(num_key_dims);
-        for (int ki = 0; ki < num_key_dims; ++ki) {
-            job_writeSweepParams[ki] = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNC_IDX, KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNC_NUM_ARGS, KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNCARG_SWEEP_PARAMS_IDX);
+        // Sweep params: one write job per key dimension.
+        // We reuse the same buffer but write different params each time.
+        if (m_use_prefix_sweep) {
+            job_writeSweepParams.resize(num_key_dims);
+            for (int ki = 0; ki < num_key_dims; ++ki) {
+                job_writeSweepParams[ki] = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNC_IDX, KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNC_NUM_ARGS, KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNCARG_SWEEP_PARAMS_IDX);
+            }
         }
 
         instr_writeTTIn->setAsWriteDeviceBuffer(job_writeTTIn);
@@ -591,28 +607,29 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
         instructionList.push_back(std::make_shared<pfacesInstruction>());
         instructionList.back()->setAsBlockingSyncPoint();
 
-        // (d) Execute prefix-max sweep for each key dimension
+        // (d) Execute prefix-max sweep for each key dimension (if enabled).
         //     Each sweep needs its own host function to set sweep_params,
-        //     then write → execute → sync.
-        for (int ki = 0; ki < num_key_dims; ++ki) {
-            // Host function to set sweep_params for this dimension
-            auto instr_set_sweep = std::make_shared<pfacesInstruction>();
-            instr_set_sweep->setAsHostFunction(pfacesKernel_mono_synth::setSweepParams, "setSweepParams");
-            instructionList.push_back(instr_set_sweep);
+        //     then write → execute → sync. Under Assumption 1 the sweep is
+        //     a no-op and is skipped entirely at this scheduling stage.
+        if (m_use_prefix_sweep) {
+            for (int ki = 0; ki < num_key_dims; ++ki) {
+                auto instr_set_sweep = std::make_shared<pfacesInstruction>();
+                instr_set_sweep->setAsHostFunction(pfacesKernel_mono_synth::setSweepParams, "setSweepParams");
+                instructionList.push_back(instr_set_sweep);
 
-            // Write sweep_params to device
-            auto instr_ws = std::make_shared<pfacesInstruction>();
-            instr_ws->setAsWriteDeviceBuffer(job_writeSweepParams[ki]);
-            instructionList.push_back(instr_ws);
+                auto instr_ws = std::make_shared<pfacesInstruction>();
+                instr_ws->setAsWriteDeviceBuffer(job_writeSweepParams[ki]);
+                instructionList.push_back(instr_ws);
 
-            for (auto& job : job_execTTPrefixMax[ki]) {
-                auto instr = std::make_shared<pfacesInstruction>();
-                instr->setAsDeviceExecute(job);
-                instructionList.push_back(instr);
+                for (auto& job : job_execTTPrefixMax[ki]) {
+                    auto instr = std::make_shared<pfacesInstruction>();
+                    instr->setAsDeviceExecute(job);
+                    instructionList.push_back(instr);
+                }
+
+                instructionList.push_back(std::make_shared<pfacesInstruction>());
+                instructionList.back()->setAsBlockingSyncPoint();
             }
-
-            instructionList.push_back(std::make_shared<pfacesInstruction>());
-            instructionList.back()->setAsBlockingSyncPoint();
         }
 
         // (e) Read TT_out + changed_flag back to host
@@ -703,39 +720,6 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
         instructionList.push_back(instr_gfpTimer);
     }
 
-    // Build bitmap on GPU after synthesis converges.
-    // In RT-controller mode with GPU TT-only, the threshold table is already
-    // on the host (from processTTGPUUpdate) and can serve O(1) safety queries
-    // directly — skip the expensive bitmap build + 97MB GPU→CPU readback.
-    if (!m_skip_bitmap_build) {
-    //   1. prepareBitmapGPU: write final basis_list_size to pool buffer
-    //   2. writeBasisList + writeBasisListSize: transfer final basis to device
-    //   3. exec build_bitmap: GPU kernel computes downward closure
-    //   4. readBitmap: transfer bitmap from device to host
-    //   5. copyBitmapFromGPU: convert int* to uint8_t vector
-    instructionList.push_back(std::make_shared<pfacesInstruction>());
-    instructionList.back()->setAsBlockingSyncPoint();
-
-    instr_hostFuncPrepareBitmapGPU->setAsHostFunction(pfacesKernel_mono_synth::prepareBitmapGPU, "prepareBitmapGPU");
-    instructionList.push_back(instr_hostFuncPrepareBitmapGPU);
-    instructionList.push_back(instr_writeBasisList);
-    instructionList.push_back(instr_writeBasisListSize);
-
-    for (auto& job : job_execBuildBitmap) {
-        auto instr = std::make_shared<pfacesInstruction>();
-        instr->setAsDeviceExecute(job);
-        instructionList.push_back(instr);
-    }
-
-    instructionList.push_back(instr_readBitmap);
-
-    instructionList.push_back(std::make_shared<pfacesInstruction>());
-    instructionList.back()->setAsBlockingSyncPoint();
-
-    instr_hostFuncCopyBitmapFromGPU->setAsHostFunction(pfacesKernel_mono_synth::copyBitmapFromGPU, "copyBitmapFromGPU");
-    instructionList.push_back(instr_hostFuncCopyBitmapFromGPU);
-    } // !m_skip_bitmap_build
-
     instructionList.push_back(std::make_shared<pfacesInstruction>());
     instructionList.back()->setAsBlockingSyncPoint();
 	
@@ -804,7 +788,7 @@ size_t pfacesKernel_mono_synth::initSafeSet(void* pPackedKernel, void* pPackedPa
         // Bas(X) = {corner} skips all trivially-unsafe iterations
         // without affecting the fixed point.
         // ----------------------------------------------------------
-        const int* table = (const int*)pParallelProgram->m_dataPool[0].first;
+        const unsigned int* table = (const unsigned int*)pParallelProgram->m_dataPool[0].first;
         const int ss_dim = pKernel->m_ss_dim;
         const int total = (int)pKernel->x_flat_width;
         
@@ -820,8 +804,8 @@ size_t pfacesKernel_mono_synth::initSafeSet(void* pPackedKernel, void* pPackedPa
         
         for (int fi = 0; fi < total; ++fi) {
             // Check if this cell has a valid transition (T[q] != bot)
-            // The kernel sets all dims to -1 for invalid; checking dim 0 suffices
-            if (table[fi * ss_dim] == -1) continue;
+            // flat_succ == 0xFFFFFFFF means invalid
+            if (table[fi] == 0xFFFFFFFFu) continue;
             
             // Check if this cell is maximal in S_0: for every dimension j,
             // either q_j = N_j (at grid boundary) or the upper neighbor
@@ -837,7 +821,7 @@ size_t pfacesKernel_mono_synth::initSafeSet(void* pPackedKernel, void* pPackedPa
                 if (idx_j < (int)pKernel->X_widthPerDimension[j]) {
                     // Upper neighbor exists; check its transition
                     int upper_fi = fi + strides[j];
-                    if (table[upper_fi * ss_dim] != -1) {
+                    if (table[upper_fi] != 0xFFFFFFFFu) {
                         // Upper neighbor is also valid => not maximal
                         is_maximal = false;
                         break;
@@ -896,7 +880,7 @@ size_t pfacesKernel_mono_synth::prepareSafeSetIteration(void* pPackedKernel, voi
 
     // TT-only mode: one column-wise binary search iteration
     if (pKernel->m_use_tt_only) {
-        const int* nextStateTable = (const int*)pParallelProgram->m_dataPool[0].first;
+        const unsigned int* nextStateTable = (const unsigned int*)pParallelProgram->m_dataPool[0].first;
         auto iter_start = std::chrono::high_resolution_clock::now();
         pKernel->ttOnlyOneIteration(nextStateTable);
         auto iter_end = std::chrono::high_resolution_clock::now();
@@ -950,7 +934,7 @@ size_t pfacesKernel_mono_synth::prepareSafeSetIteration(void* pPackedKernel, voi
         auto tt_build_start = std::chrono::high_resolution_clock::now();
         pKernel->buildThresholdTable();
         auto tt_build_end = std::chrono::high_resolution_clock::now();
-        const int* nextStateTable = (const int*)pParallelProgram->m_dataPool[0].first;
+        const unsigned int* nextStateTable = (const unsigned int*)pParallelProgram->m_dataPool[0].first;
         int* pUnsafeFlags = (int*)pParallelProgram->m_dataPool[5].first;
         auto tt_lookup_start = std::chrono::high_resolution_clock::now();
         pKernel->cpuSafetyCheck(nextStateTable, pUnsafeFlags);
@@ -1044,6 +1028,16 @@ size_t pfacesKernel_mono_synth::processSafeSetUpdate(void* pPackedKernel, void* 
         pKernel->m_benchmark_total_time_ms += time_ms;
         pKernel->m_benchmark_total_iterations += pKernel->m_iterations;
         pKernel->m_benchmark_current_run++;
+
+        // Compute safe cell count from threshold table (sum of all entries)
+        if (pKernel->m_use_threshold_table && !pKernel->m_use_tt_only) {
+            pKernel->buildThresholdTable();
+            int64_t safe_count = 0;
+            for (int i = 0; i < pKernel->m_threshold_table_size; ++i)
+                safe_count += pKernel->m_threshold_table[i];
+            std::cout << "[MonoSynth] Safe cells: " << safe_count << "/" << pKernel->x_flat_width
+                      << " (" << (100.0 * safe_count / pKernel->x_flat_width) << "%)" << std::endl;
+        }
 
         std::cout << "Run " << pKernel->m_benchmark_current_run << "/" << pKernel->m_benchmark_count << ": " 
                   << pKernel->m_iterations << " iterations, " 
@@ -1275,7 +1269,7 @@ void pfacesKernel_mono_synth::buildThresholdTable() {
     }
 }
 
-void pfacesKernel_mono_synth::cpuSafetyCheck(const int* next_state_table, int* unsafe_flags) {
+void pfacesKernel_mono_synth::cpuSafetyCheck(const unsigned int* next_state_flat, int* unsafe_flags) {
     const int n = m_ss_dim;
     const int total = (int)x_flat_width;
 
@@ -1287,11 +1281,21 @@ void pfacesKernel_mono_synth::cpuSafetyCheck(const int* next_state_table, int* u
             continue;
         }
 
-        const int* next_state = &next_state_table[flat_idx * n];
+        unsigned int flat_succ = next_state_flat[flat_idx];
 
-        if (next_state[0] == -1) {
+        if (flat_succ == 0xFFFFFFFFu) {
             unsafe_flags[i] = 1;
             continue;
+        }
+
+        // Unflatten flat_succ to get per-coordinate 1-based indices
+        int next_state[16];
+        {
+            unsigned int tmp = flat_succ;
+            for (int d = 0; d < n; ++d) {
+                next_state[d] = (int)(tmp % X_widthPerDimension[d]) + 1;
+                tmp /= X_widthPerDimension[d];
+            }
         }
 
         // Compute key flat index from successor coordinates
@@ -1349,7 +1353,7 @@ void pfacesKernel_mono_synth::writeThresholdCSV(int iteration) {
     m_threshold_csv_file.flush();
 }
 
-void pfacesKernel_mono_synth::ttOnlyOneIteration(const int* next_state_table) {
+void pfacesKernel_mono_synth::ttOnlyOneIteration(const unsigned int* next_state_flat) {
     const int n = m_ss_dim;
     const int d_star = m_threshold_d_star;
     const int table_size = m_threshold_table_size;
@@ -1390,9 +1394,19 @@ void pfacesKernel_mono_synth::ttOnlyOneIteration(const int* next_state_table) {
             int mid = (lo + hi) / 2;
             int cell_flat = base_flat + (mid - 1) * d_star_stride;
 
-            const int* next = &next_state_table[cell_flat * n];
+            unsigned int flat_succ = next_state_flat[cell_flat];
 
-            if (next[0] == -1) { hi = mid - 1; continue; }
+            if (flat_succ == 0xFFFFFFFFu) { hi = mid - 1; continue; }
+
+            // Unflatten flat_succ to get per-coordinate 1-based indices
+            int next[16];
+            {
+                unsigned int tmp = flat_succ;
+                for (int d = 0; d < n; ++d) {
+                    next[d] = (int)(tmp % X_widthPerDimension[d]) + 1;
+                    tmp /= X_widthPerDimension[d];
+                }
+            }
 
             // Compute successor key flat index
             int succ_key_flat = 0;
@@ -1425,27 +1439,31 @@ void pfacesKernel_mono_synth::ttOnlyOneIteration(const int* next_state_table) {
         }
     }
 
-    // Prefix-max sweep: restore non-increasing property.
-    // Required because invalid transitions (T=⊥) at column bottoms can cause
-    // f(k_low) < f(k_high) when k_low < k_high, violating monotonicity.
-    const int num_key_dims = (int)m_threshold_key_dims.size();
-    for (int ki = 0; ki < num_key_dims; ++ki) {
-        const int N_k = m_threshold_key_dims[ki];
-        const int stride_k = m_threshold_orig_to_key_stride[m_threshold_key_dim_indices[ki]];
-        const int block = stride_k * N_k;
-        for (int c = N_k - 2; c >= 0; --c) {
-            for (int outer = 0; outer < table_size; outer += block) {
-                for (int inner = 0; inner < stride_k; ++inner) {
-                    const int idx = outer + c * stride_k + inner;
-                    const int hi = idx + stride_k;
-                    if (m_threshold_table[hi] > m_threshold_table[idx])
-                        m_threshold_table[idx] = m_threshold_table[hi];
+    // Optional prefix-max sweep: restore non-increasing property.
+    // Under the monotone boundary-handling assumption (Assumption 1 in the
+    // paper) the column update alone yields a lower-closed threshold, so
+    // the sweep is a no-op and skipped by default. Kept here as a numerical
+    // safeguard for users who relax Assumption 1.
+    if (m_use_prefix_sweep) {
+        const int num_key_dims = (int)m_threshold_key_dims.size();
+        for (int ki = 0; ki < num_key_dims; ++ki) {
+            const int N_k = m_threshold_key_dims[ki];
+            const int stride_k = m_threshold_orig_to_key_stride[m_threshold_key_dim_indices[ki]];
+            const int block = stride_k * N_k;
+            for (int c = N_k - 2; c >= 0; --c) {
+                for (int outer = 0; outer < table_size; outer += block) {
+                    for (int inner = 0; inner < stride_k; ++inner) {
+                        const int idx = outer + c * stride_k + inner;
+                        const int hi = idx + stride_k;
+                        if (m_threshold_table[hi] > m_threshold_table[idx])
+                            m_threshold_table[idx] = m_threshold_table[hi];
+                    }
                 }
             }
         }
     }
 
-    // Convergence check: compare swept result vs previous (also swept) table
+    // Convergence check: compare result vs previous table
     for (int i = 0; i < table_size; ++i) {
         if (m_threshold_table[i] != tau_in[i]) {
             m_tt_only_changed = true;
@@ -1510,15 +1528,15 @@ void pfacesKernel_mono_synth::extractBasisFromThresholdTable() {
  * GPU TT-only host functions
  *
  * Data pool indices (when TT-only GPU is active):
- *   Pool[7] = threshold_table_in  (func3.arg1)
- *   Pool[8] = threshold_table_out (func3.arg2 / func4.arg0 resident)
- *   Pool[9] = changed_flag        (func3.arg3)
- *   Pool[10]= sweep_params        (func4.arg1)
+ *   Pool[6] = threshold_table_in  (func2.arg1)
+ *   Pool[7] = threshold_table_out (func2.arg2 / func3.arg0 resident)
+ *   Pool[8] = changed_flag        (func2.arg3)
+ *   Pool[9] = sweep_params        (func3.arg1)
  * ================================================================ */
-#define TT_GPU_POOL_TT_IN  7
-#define TT_GPU_POOL_TT_OUT 8
-#define TT_GPU_POOL_CHANGED 9
-#define TT_GPU_POOL_SWEEP  10
+#define TT_GPU_POOL_TT_IN  6
+#define TT_GPU_POOL_TT_OUT 7
+#define TT_GPU_POOL_CHANGED 8
+#define TT_GPU_POOL_SWEEP  9
 
 /* initTTGPU: Fill threshold table with N_d*, set up basis pointers, init sweep_params */
 size_t pfacesKernel_mono_synth::initTTGPU(void* pPackedKernel, void* pPackedParallelProgram) {
@@ -1646,6 +1664,12 @@ size_t pfacesKernel_mono_synth::processTTGPUUpdate(void* pPackedKernel, void* pP
         pKernel->m_benchmark_total_iterations += pKernel->m_tt_gpu_iteration;
         pKernel->m_benchmark_current_run++;
 
+        // Report safe cells (replaces former GPU Bitmap output)
+        int64_t safe_count = 0;
+        for (int i = 0; i < pKernel->m_threshold_table_size; ++i) safe_count += pKernel->m_threshold_table[i];
+        std::cout << "[MonoSynth] Safe cells: " << safe_count << "/" << pKernel->x_flat_width
+                  << " (" << (100.0 * safe_count / pKernel->x_flat_width) << "%)" << std::endl;
+
         std::cout << "Run " << pKernel->m_benchmark_current_run << "/" << pKernel->m_benchmark_count
                   << ": " << pKernel->m_tt_gpu_iteration << " iterations (GPU TT-only), "
                   << pKernel->m_safe_set_size << " basis, "
@@ -1654,50 +1678,6 @@ size_t pfacesKernel_mono_synth::processTTGPUUpdate(void* pPackedKernel, void* pP
     }
 
     return 1;  // Continue
-}
-
-/* Prepare data for GPU bitmap kernel — called as host function before GPU exec */
-size_t pfacesKernel_mono_synth::prepareBitmapGPU(void* pPackedKernel, void* pPackedParallelProgram) {
-    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
-    pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
-    pKernel->m_bitmap_build_start = std::chrono::high_resolution_clock::now();
-    
-    // Write final basis size to pool buffer so it gets transferred to device
-    int* pBasisListSize = (int*)pParallelProgram->m_dataPool[4].first;
-    if (pBasisListSize) {
-        *pBasisListSize = pKernel->m_safe_set_size;
-    }
-    
-    return 0;
-}
-
-/* Copy GPU bitmap buffer to host m_bitmap vector — called after GPU exec + read-back */
-/* Uses pFaces internal convention (dim 0 fastest, 1-based indices on device). */
-size_t pfacesKernel_mono_synth::copyBitmapFromGPU(void* pPackedKernel, void* pPackedParallelProgram) {
-    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
-    pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
-    
-    const int total = (int)pKernel->x_flat_width;
-    pKernel->m_bitmap.assign(total, 0);
-    const int* gpuBitmap = (const int*)pParallelProgram->m_dataPool[BITMAP_DATA_POOL_IDX].first;
-
-    int safe_count = 0;
-    for (int kf = 0; kf < total; ++kf) {
-        if (gpuBitmap[kf]) {
-            pKernel->m_bitmap[kf] = 1;
-            safe_count++;
-        }
-    }
-    
-    std::cout << "[MonoSynth] GPU Bitmap: " << safe_count << "/" << total 
-              << " safe cells (" << (100.0 * safe_count / total) << "%)" << std::endl;
-
-    auto bitmap_build_end = std::chrono::high_resolution_clock::now();
-    pKernel->m_bitmap_build_total_ms = std::chrono::duration<double, std::milli>(bitmap_build_end - pKernel->m_bitmap_build_start).count();
-    std::cout << "[MonoSynth] Bitmap build total: " << pKernel->m_bitmap_build_total_ms
-              << " ms (including host-device transfers and host copy)" << std::endl;
-    
-    return 0;
 }
 
 /* checkSkipPrecompute: Returns 1 to skip precompute, 0 to execute it.
@@ -1712,10 +1692,11 @@ size_t pfacesKernel_mono_synth::timerAfterPrecompute(void* pPackedKernel, void* 
     pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
     auto now = std::chrono::high_resolution_clock::now();
     pKernel->m_precompute_ms = std::chrono::duration<double, std::milli>(now - pKernel->m_phase_timer).count();
+    std::cout << "[MonoSynth] Precompute phase: " << (int)pKernel->m_precompute_ms << " ms" << std::endl;
     return 0;
 }
 
-/* timerAfterGFP: Record GFP phase time (called after GFP convergence, before bitmap) */
+/* timerAfterGFP: Record GFP phase time (called after GFP convergence) */
 size_t pfacesKernel_mono_synth::timerAfterGFP(void* pPackedKernel, void* /*pPackedParallelProgram*/) {
     pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
     auto now = std::chrono::high_resolution_clock::now();
@@ -1758,19 +1739,6 @@ void pfacesKernel_mono_synth::configureTuneParallelProgram(
 			execJobs = parallelAdvisor.distributeJob(
 				*this,
 				KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_IDX,
-				tuneRange,
-				ndrOffset,
-				true,
-				{1.0},
-				true,
-				false,
-				false);
-			break;
-		case KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_IDX:
-			tuneRange = cl::NDRange{x_flat_width, 1, 1};
-			execJobs = parallelAdvisor.distributeJob(
-				*this,
-				KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_IDX,
 				tuneRange,
 				ndrOffset,
 				true,
@@ -1848,13 +1816,6 @@ void pfacesKernel_mono_synth::configureTuneParallelProgram(
 			add_write_instr(writeBasisListSize);
 			break;
 		}
-		case KERNEL_MONO_SYNTH_BUILD_BITMAP_FUNC_IDX: {
-			auto writeBasisList = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 2, 3, 1);
-			auto writeBasisListSize = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 2, 3, 2);
-			add_write_instr(writeBasisList);
-			add_write_instr(writeBasisListSize);
-			break;
-		}
 	}
 
 	add_exec_job(execJobs.front());
@@ -1870,6 +1831,5 @@ void pfacesKernel_mono_synth::configureTuneParallelProgram(
 } // namespace mono_synth
 
 PFACES_REGISTER_LOADABLE_KERNEL(mono_synth::pfacesKernel_mono_synth)
-
 
 
