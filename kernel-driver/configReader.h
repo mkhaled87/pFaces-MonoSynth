@@ -21,7 +21,7 @@ public:
 private:
 	// Member variables
 	std::string m_defaults;
-	const char* m_schema[816];
+	const char* m_schema[819];
 	static defaultConfiguration s_singleton;
 };
 
@@ -47,6 +47,8 @@ class configReader {
 	bool            m_use_tt_only_gpu;
 	bool            m_use_inline_dynamics;
 	bool            m_use_prefix_sweep;
+	bool            m_use_bitmap_gfp;
+	bool            m_extract_basis;
 	int             m_threshold_d_star;
 	size_t          m_benchmark_count;
 
@@ -171,6 +173,8 @@ public:
 	inline bool isUseTTOnlyGPU() const { return m_use_tt_only_gpu; }
 	inline bool isUseInlineDynamics() const { return m_use_inline_dynamics; }
 	inline bool isUsePrefixSweep() const { return m_use_prefix_sweep; }
+	inline bool isUseBitmapGFP() const { return m_use_bitmap_gfp; }
+	inline bool isExtractBasis() const { return m_extract_basis; }
 	inline int getThresholdDStarOverride() const { return m_threshold_d_star; }
 	inline size_t getBenchmarkCount() const { return m_benchmark_count; }
 

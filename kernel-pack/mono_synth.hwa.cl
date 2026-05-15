@@ -12,3 +12,8 @@
 
 // pFaces-Including a KERNEL-Function: check_basis_safety
 @pfaces-include:"check_basis_safety.cl"
+
+// pFaces-Including KERNEL-Functions: bitmap_gfp_iterate + bitmap_gfp_advance + bitmap_gfp_prefix
+@pfaces-include:"bitmap_gfp_iterate.cl"
+@pfaces-include:"bitmap_gfp_advance.cl"
+@pfaces-include:"bitmap_gfp_prefix.cl"

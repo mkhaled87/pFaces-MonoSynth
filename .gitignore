@@ -25,8 +25,11 @@ desktop.ini
 
 # Build artifacts
 __pycache__/
+tools/rt_controller/build*/
+tools/rt_controller/experiments/
 
 # Data / output artifacts
+tools/benchmark_results/
 *.csv
 *.bin
 *.mp4

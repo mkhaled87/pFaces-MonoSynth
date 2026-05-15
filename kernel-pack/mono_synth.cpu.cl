@@ -15,3 +15,8 @@
 
 // pFaces-Including KERNEL-Functions: tt_only_column_update + tt_only_prefix_max
 @pfaces-include:"tt_only_iterate.cl"
+
+// pFaces-Including KERNEL-Functions: bitmap_gfp_iterate + bitmap_gfp_advance + bitmap_gfp_prefix
+@pfaces-include:"bitmap_gfp_iterate.cl"
+@pfaces-include:"bitmap_gfp_advance.cl"
+@pfaces-include:"bitmap_gfp_prefix.cl"

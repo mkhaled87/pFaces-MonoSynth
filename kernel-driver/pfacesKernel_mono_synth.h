@@ -55,6 +55,29 @@ namespace mono_synth {
 #define KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNCARG_TT_IDX 0
 #define KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNCARG_SWEEP_PARAMS_IDX 1
 
+// Bitmap GFP kernels (GPU)
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_NAME "bitmap_gfp_iterate"
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_IDX 4
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_NUM_ARGS 5
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNCARG_NEXT_STATE_TABLE_IDX 0
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNCARG_BITMAP_IN_IDX 1
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNCARG_BITMAP_OUT_IDX 2
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNCARG_CHANGED_FLAG_IDX 3
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNCARG_RUNTIME_PARAMS_IDX 4
+
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ADVANCE_FUNC_NAME "bitmap_gfp_advance"
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ADVANCE_FUNC_IDX 5
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ADVANCE_FUNC_NUM_ARGS 3
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ADVANCE_FUNCARG_BITMAP_IN_IDX 0
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ADVANCE_FUNCARG_BITMAP_OUT_IDX 1
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_ADVANCE_FUNCARG_CHANGED_FLAG_IDX 2
+
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_PREFIX_FUNC_NAME "bitmap_gfp_prefix"
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_PREFIX_FUNC_IDX 6
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_PREFIX_FUNC_NUM_ARGS 2
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_PREFIX_FUNCARG_BITMAP_IDX 0
+#define KERNEL_MONO_SYNTH_BITMAP_GFP_PREFIX_FUNCARG_SWEEP_PARAMS_IDX 1
+
 
 /**********************************************************/
 /** pfacesKernel_mono_synth *************************************/
@@ -85,6 +108,17 @@ private:
   std::shared_ptr<pfacesDeviceWriteJob> job_writeChangedFlag;
   std::shared_ptr<pfacesDeviceReadJob> job_readChangedFlag;
   std::vector<std::shared_ptr<pfacesDeviceWriteJob>> job_writeSweepParams; // per key dim
+
+  /* GPU bitmap GFP jobs */
+  std::vector<std::shared_ptr<pfacesDeviceExecuteJob>> job_execBitmapGFPIterate;
+  std::vector<std::shared_ptr<pfacesDeviceExecuteJob>> job_execBitmapGFPAdvance;
+  std::vector<std::vector<std::shared_ptr<pfacesDeviceExecuteJob>>> job_execBitmapGFPPrefix;
+  std::shared_ptr<pfacesDeviceWriteJob> job_writeBitmapIn;
+  std::shared_ptr<pfacesDeviceReadJob> job_readBitmapIn;
+  std::shared_ptr<pfacesDeviceWriteJob> job_writeBitmapOut;
+  std::shared_ptr<pfacesDeviceWriteJob> job_writeBitmapChangedFlag;
+  std::shared_ptr<pfacesDeviceReadJob> job_readBitmapChangedFlag;
+  std::vector<std::shared_ptr<pfacesDeviceWriteJob>> job_writeBitmapSweepParams;
 
   /* instructions for the parallel program */
   std::vector<std::shared_ptr<pfacesInstruction>> instructionList;
@@ -119,6 +153,17 @@ private:
   std::shared_ptr<pfacesInstruction> instr_hostFuncInitTTGPU = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_hostFuncPrepareTTGPUIteration = std::make_shared<pfacesInstruction>();
   std::shared_ptr<pfacesInstruction> instr_hostFuncProcessTTGPUUpdate = std::make_shared<pfacesInstruction>();
+
+  /* GPU bitmap GFP instructions */
+  std::shared_ptr<pfacesInstruction> instr_writeBitmapIn = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_readBitmapIn = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_writeBitmapOut = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_writeBitmapChangedFlag = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_readBitmapChangedFlag = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_hostFuncInitBitmapGFP = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_hostFuncPrepareBitmapGFPIteration = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_hostFuncProcessBitmapGFPUpdate = std::make_shared<pfacesInstruction>();
+  std::shared_ptr<pfacesInstruction> instr_hostFuncFinalizeBitmapGFP = std::make_shared<pfacesInstruction>();
 
   size_t x_flat_width;
 
@@ -157,6 +202,11 @@ public:
   static size_t prepareTTGPUIteration(void* pPackedKernel, void* pPackedParallelProgram);
   static size_t processTTGPUUpdate(void* pPackedKernel, void* pPackedParallelProgram);
   static size_t setSweepParams(void* pPackedKernel, void* pPackedParallelProgram);
+  static size_t initBitmapGFP(void* pPackedKernel, void* pPackedParallelProgram);
+  static size_t prepareBitmapGFPIteration(void* pPackedKernel, void* pPackedParallelProgram);
+  static size_t processBitmapGFPUpdate(void* pPackedKernel, void* pPackedParallelProgram);
+  static size_t finalizeBitmapGFP(void* pPackedKernel, void* pPackedParallelProgram);
+  static size_t setBitmapSweepParams(void* pPackedKernel, void* pPackedParallelProgram);
   static size_t checkSkipPrecompute(void* pPackedKernel, void* pPackedParallelProgram);
   static size_t timerAfterPrecompute(void* pPackedKernel, void* pPackedParallelProgram);
   static size_t timerAfterGFP(void* pPackedKernel, void* pPackedParallelProgram);
@@ -174,7 +224,11 @@ public:
   int getStateDim() const { return m_ss_dim; }
   const std::vector<cl_ulong>& getGridSizes() const { return X_widthPerDimension; }
   bool isUseTTOnlyGPU() const { return m_use_tt_only && m_use_tt_only_gpu; }
+  bool isUseBitmapGFP() const { return m_use_bitmap_gfp; }
   bool isUseInlineDynamics() const { return m_use_inline_dynamics; }
+  const std::vector<cl_uint>& getBitmapWords() const { return m_bitmap_words; }
+  size_t getBitmapWordCount() const { return m_bitmap_word_count; }
+  size_t getBitmapSize() const { return x_flat_width; }
 
   /* direct-mode controls */
   void setSkipCache(bool v) { m_skip_cache = v; }
@@ -187,6 +241,7 @@ public:
   void setRuntimeParam0(float value) { m_runtime_param0 = value; }
   float getRuntimeParam0() const { return m_runtime_param0; }
   void setSkipPrecompute(bool v) { m_skip_precompute = v; }
+  void setExtractBasis(bool v) { m_extract_basis = v; }
 
   /* threshold table accessors for direct RT controller integration */
   const std::vector<int>& getThresholdTable() const { return m_threshold_table; }
@@ -194,6 +249,7 @@ public:
   int getThresholdDStar() const { return m_threshold_d_star; }
   const std::vector<int>& getThresholdKeyStrides() const { return m_threshold_orig_to_key_stride; }
   int64_t getSafeCellCount() const {
+    if (m_use_bitmap_gfp) return m_bitmap_safe_cells;
     int64_t total = 0;
     for (int i = 0; i < m_threshold_table_size; ++i) total += m_threshold_table[i];
     return total;
@@ -278,6 +334,16 @@ public:
   bool m_tt_only_changed = false;
   void ttOnlyOneIteration(const unsigned int* next_state_flat);
   void extractBasisFromThresholdTable();
+
+  /* Bitmap GFP mode */
+  bool m_use_bitmap_gfp = false;
+  std::vector<cl_uint> m_bitmap_words;
+  size_t m_bitmap_word_count = 0;
+  int m_bitmap_gfp_iteration = 0;
+  int m_bitmap_gfp_sweep_dim_idx = 0;
+  double m_bitmap_gfp_last_ms = 0.0;
+  int64_t m_bitmap_safe_cells = 0;
+  void buildThresholdTableFromBitmap();
   
   /* GPU TT-only iteration state */
   int m_tt_gpu_iteration = 0;
@@ -287,6 +353,7 @@ public:
   /* direct-mode flags */
   bool m_skip_cache = false;
   bool m_skip_precompute = false;
+  bool m_extract_basis = true;
   float m_runtime_param0 = 0.0f;  // 0 = use compile-time default from dynamics file
 
   /* providing implementation of the virtual method: getParameterList*/

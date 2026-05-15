@@ -19,6 +19,10 @@
 
 namespace mono_synth {
 
+static inline bool getPackedBit(const std::vector<cl_uint>& words, size_t idx) {
+    return (words[idx >> 5] & (1u << (idx & 31u))) != 0;
+}
+
 
 /* a call-back function to save the controller/abstraction after the kernel finishes */
 size_t pfacesKernel_mono_synth::saveTransitionTable(void* pPackedKernel, void* pPackedParallelProgram) {
@@ -96,6 +100,8 @@ std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_
     paramvals.push_back(std::to_string(m_spCfg->getDisturbDim()));
     params.push_back("@@TOTAL_STATES@@");
     paramvals.push_back(std::to_string(x_flat_width));
+    params.push_back("@@BITMAP_WORD_COUNT@@");
+    paramvals.push_back(std::to_string(m_bitmap_word_count));
 
     /* Solver Config */
     params.push_back("@@ODE_STEPS@@");
@@ -152,9 +158,10 @@ std::pair<std::vector<std::string>, std::vector<std::string>> pfacesKernel_mono_
     params.push_back("@@GRID_SIZES_ARRAY@@");
     paramvals.push_back(ss_grid.str());
 
-    // Inline dynamics: compute transitions on-the-fly in column_update kernel
+    // Inline dynamics: compute transitions on-the-fly in the GFP kernel.
     params.push_back("@@USE_INLINE_DYNAMICS@@");
-    paramvals.push_back(std::to_string((m_use_inline_dynamics && m_use_tt_only_gpu) ? 1 : 0));
+    paramvals.push_back(std::to_string(
+        (m_use_inline_dynamics && ((m_use_tt_only && m_use_tt_only_gpu) || m_use_bitmap_gfp)) ? 1 : 0));
 
 	return std::make_pair(params, paramvals);
 }
@@ -200,6 +207,11 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	m_use_tt_only_gpu = m_spCfg->isUseTTOnlyGPU();
 	m_use_inline_dynamics = m_spCfg->isUseInlineDynamics();
 	m_use_prefix_sweep = m_spCfg->isUsePrefixSweep();
+	m_use_bitmap_gfp = m_spCfg->isUseBitmapGFP();
+	m_extract_basis = m_spCfg->isExtractBasis();
+	m_bitmap_word_count = (x_flat_width + 31u) / 32u;
+	const bool use_inline_transition_free =
+		m_use_inline_dynamics && ((m_use_tt_only && m_use_tt_only_gpu) || m_use_bitmap_gfp);
 
 	// Auto-calculate MAX_COORD_VALUE as maximum grid size across all dimensions
 	MAX_COORD_VALUE = 0;
@@ -215,7 +227,7 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 	m_safe_set_flat_indices = nullptr;
     // Basis-method-only arrays: skip in TT-only GPU mode to avoid OOM
     // (e.g. coord_buckets at N=10000: 3×10001×1M×4B = 120 GB)
-    if (!(m_use_tt_only && m_use_tt_only_gpu)) {
+    if (!((m_use_tt_only && m_use_tt_only_gpu) || m_use_bitmap_gfp)) {
         m_unsafe_mask = std::vector<unsigned char>(MAX_BASIS_ELEMENTS, 0);
         m_neighbor_buffer = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM * MAX_STATE_DIM, 0);
         m_neighbor_parent_dim = std::vector<int>(MAX_BASIS_ELEMENTS * MAX_STATE_DIM, 0);
@@ -266,6 +278,15 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 			std::cout << "[MonoSynth] Inline dynamics enabled: computing transitions on-the-fly during GFP (skipping precompute kernel)" << std::endl;
 		}
 		std::cout << "[MonoSynth] Prefix-max sweep: " << (m_use_prefix_sweep ? "ENABLED" : "disabled (relying on monotone boundary handling)") << std::endl;
+	}
+	if (m_use_bitmap_gfp) {
+		m_use_threshold_table = false;
+		std::cout << "[MonoSynth] Bitmap GFP mode: full-state bit-packed GFP iteration"
+		          << " (" << m_bitmap_word_count << " uint32 words, "
+		          << (m_bitmap_word_count * sizeof(cl_uint)) << " bytes per bitmap)" << std::endl;
+		if (m_use_inline_dynamics) {
+			std::cout << "[MonoSynth] Inline dynamics enabled: bitmap GFP computes transitions on-the-fly (skipping precompute kernel)" << std::endl;
+		}
 	}
 
 	// Setup basis evolution recording if enabled
@@ -336,7 +357,7 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
     precomputeArgs.m_baseTypeMultiple = { (size_t)x_flat_width, 4 };
 	// In inline dynamics mode, the transition table is unused. Allocate minimal buffer
 	// to avoid OOM on very large grids (3B+ cells × 3 dims × 4 bytes = 36+ GB).
-	if (m_use_inline_dynamics && m_use_tt_only && m_use_tt_only_gpu) {
+	if (use_inline_transition_free) {
 		precomputeArgs.m_baseTypeMultiple[0] = 1;
 	}
 	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME, precomputeArgs));
@@ -355,7 +376,9 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
           KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNCARG_UNSAFE_FLAGS_NAME },
         true);
     safetyArgs.m_baseTypeMultiple = { (size_t)MAX_BASIS_ELEMENTS, (size_t)x_flat_width, (size_t)(MAX_BASIS_ELEMENTS * ssDim), 1, (size_t)MAX_BASIS_ELEMENTS };
-	if (m_use_inline_dynamics && m_use_tt_only && m_use_tt_only_gpu) {
+	if (m_use_bitmap_gfp) {
+		safetyArgs.m_baseTypeMultiple = { 1, 1, 1, 1, 1 };
+	} else if (use_inline_transition_free) {
 		safetyArgs.m_baseTypeMultiple[1] = 1;
 	}
 	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_NAME, safetyArgs));
@@ -369,7 +392,9 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 		{ "next_state_table", "threshold_table_in", "threshold_table_out", "changed_flag", "runtime_params" },
 		true);
 	ttColArgs.m_baseTypeMultiple = { (size_t)x_flat_width, (size_t)m_threshold_table_size, (size_t)m_threshold_table_size, 1, 4 };
-	if (m_use_inline_dynamics && m_use_tt_only && m_use_tt_only_gpu) {
+	if (m_use_bitmap_gfp) {
+		ttColArgs.m_baseTypeMultiple = { 1, 1, 1, 1, 4 };
+	} else if (use_inline_transition_free) {
 		ttColArgs.m_baseTypeMultiple[0] = 1;
 	}
 	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_TT_COLUMN_UPDATE_FUNC_NAME, ttColArgs));
@@ -382,8 +407,48 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(const std::shared_ptr<pfacesKer
 		KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNC_NAME,
 		{ "threshold_table", "sweep_params" },
 		true);
-	ttPfxArgs.m_baseTypeMultiple = { (size_t)m_threshold_table_size, 2 };
+	ttPfxArgs.m_baseTypeMultiple = { (size_t)(m_use_bitmap_gfp ? 1 : m_threshold_table_size), 2 };
 	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_TT_PREFIX_MAX_FUNC_NAME, ttPfxArgs));
+
+	// GPU bitmap GFP iterate kernel (func idx 4)
+	std::string bitmapIterMem = packPath + "bitmap_gfp_iterate.mem";
+	std::cout << "[MonoSynth] Loading memory fingerprint from: " << bitmapIterMem << std::endl;
+	auto bitmapIterArgs = pfacesKernelFunctionArguments::loadFromFile(
+		bitmapIterMem,
+		KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_NAME,
+		{ "next_state_table", "bitmap_in", "bitmap_out", "changed_flag", "runtime_params" },
+		true);
+	size_t bitmap_words_alloc = m_use_bitmap_gfp ? m_bitmap_word_count : 1;
+	bitmapIterArgs.m_baseTypeMultiple = {
+		use_inline_transition_free ? (size_t)1 : (size_t)x_flat_width,
+		bitmap_words_alloc,
+		bitmap_words_alloc,
+		1,
+		4
+	};
+	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_NAME, bitmapIterArgs));
+
+	// GPU bitmap GFP advance kernel (func idx 5)
+	std::string bitmapAdvanceMem = packPath + "bitmap_gfp_advance.mem";
+	std::cout << "[MonoSynth] Loading memory fingerprint from: " << bitmapAdvanceMem << std::endl;
+	auto bitmapAdvanceArgs = pfacesKernelFunctionArguments::loadFromFile(
+		bitmapAdvanceMem,
+		KERNEL_MONO_SYNTH_BITMAP_GFP_ADVANCE_FUNC_NAME,
+		{ "bitmap_in", "bitmap_out", "changed_flag" },
+		true);
+	bitmapAdvanceArgs.m_baseTypeMultiple = { bitmap_words_alloc, bitmap_words_alloc, 1 };
+	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_BITMAP_GFP_ADVANCE_FUNC_NAME, bitmapAdvanceArgs));
+
+	// GPU bitmap GFP lower-closure prefix sweep kernel (func idx 6)
+	std::string bitmapPrefixMem = packPath + "bitmap_gfp_prefix.mem";
+	std::cout << "[MonoSynth] Loading memory fingerprint from: " << bitmapPrefixMem << std::endl;
+	auto bitmapPrefixArgs = pfacesKernelFunctionArguments::loadFromFile(
+		bitmapPrefixMem,
+		KERNEL_MONO_SYNTH_BITMAP_GFP_PREFIX_FUNC_NAME,
+		{ "bitmap", "sweep_params" },
+		true);
+	bitmapPrefixArgs.m_baseTypeMultiple = { bitmap_words_alloc, 2 };
+	addKernelFunction(pfacesKernelFunction(KERNEL_MONO_SYNTH_BITMAP_GFP_PREFIX_FUNC_NAME, bitmapPrefixArgs));
 }
 
 /* providing implementation of the driver of the kernel */
@@ -391,11 +456,32 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	pfacesParallelAdvisor parallelAdvisor(parallelProgram.getMachine(), parallelProgram.getTargetDevicesIndicies());
 	size_t beVerboseLevel = parallelProgram.m_beVerboseLevel;
     const bool doBenchmark = (m_benchmark_count > 1);
+	const bool use_inline_transition_free =
+		m_use_inline_dynamics && ((m_use_tt_only && m_use_tt_only_gpu) || m_use_bitmap_gfp);
 
 	// Distribute jobs
 	cl::NDRange ndrPrecompute{x_flat_width, 1, 1}, ndrCheckSafety{(size_t)MAX_BASIS_ELEMENTS, 1, 1}, ndrOffset{0, 0, 0};
 	job_execPrecomputeTransition = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_IDX, ndrPrecompute, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
     job_execCheckBasisSafety = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_CHECK_BASIS_SAFETY_FUNC_IDX, ndrCheckSafety, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
+	if (m_use_bitmap_gfp) {
+		cl::NDRange ndrBitmapWords{m_bitmap_word_count, 1, 1};
+		const size_t bitmap_iter_chunk_cells = 1000000000ULL;
+		for (size_t chunk_start = 0; chunk_start < x_flat_width; chunk_start += bitmap_iter_chunk_cells) {
+			const size_t chunk_cells = std::min(bitmap_iter_chunk_cells, x_flat_width - chunk_start);
+			cl::NDRange ndrBitmapIter{chunk_cells, 1, 1};
+			cl::NDRange ndrBitmapIterOffset{chunk_start, 0, 0};
+			auto chunkJobs = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_IDX, ndrBitmapIter, ndrBitmapIterOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
+			job_execBitmapGFPIterate.insert(job_execBitmapGFPIterate.end(), chunkJobs.begin(), chunkJobs.end());
+		}
+		job_execBitmapGFPAdvance = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_BITMAP_GFP_ADVANCE_FUNC_IDX, ndrBitmapWords, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
+		const int ss_dim = (int)m_spCfg->getSsDim();
+		job_execBitmapGFPPrefix.resize(ss_dim);
+		for (int d = 0; d < ss_dim; ++d) {
+			size_t num_fibers = x_flat_width / (size_t)X_widthPerDimension[d];
+			cl::NDRange ndrPrefix{num_fibers, 1, 1};
+			job_execBitmapGFPPrefix[d] = parallelAdvisor.distributeJob(*this, KERNEL_MONO_SYNTH_BITMAP_GFP_PREFIX_FUNC_IDX, ndrPrefix, ndrOffset, parallelProgram.m_isFixedJobDistribution, parallelProgram.m_fixedJobDistribution, true, false, false);
+		}
+	}
 
 	if (beVerboseLevel >= 2)
 		parallelAdvisor.printTaskSchedulingReport(parallelProgram.getMachine(), { KERNEL_MONO_SYNTH_PRECOMPUTE_TRANSITIONS_FUNC_NAME }, { job_execPrecomputeTransition }, x_flat_width);
@@ -414,6 +500,18 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     job_writeBasisFlatIdx = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 1, 5, 0);
     job_writeBasisList = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 1, 5, 2);
     job_writeBasisListSize = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, 1, 5, 3);
+	if (m_use_bitmap_gfp) {
+		job_writeBitmapIn = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_IDX, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_NUM_ARGS, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNCARG_BITMAP_IN_IDX);
+		job_readBitmapIn = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_IDX, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_NUM_ARGS, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNCARG_BITMAP_IN_IDX);
+		job_writeBitmapOut = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_IDX, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_NUM_ARGS, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNCARG_BITMAP_OUT_IDX);
+		job_writeBitmapChangedFlag = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_IDX, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_NUM_ARGS, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNCARG_CHANGED_FLAG_IDX);
+		job_readBitmapChangedFlag = std::make_shared<pfacesDeviceReadJob>(dataAccessDevice, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_IDX, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNC_NUM_ARGS, KERNEL_MONO_SYNTH_BITMAP_GFP_ITERATE_FUNCARG_CHANGED_FLAG_IDX);
+		const int ss_dim = (int)m_spCfg->getSsDim();
+		job_writeBitmapSweepParams.resize(ss_dim);
+		for (int d = 0; d < ss_dim; ++d) {
+			job_writeBitmapSweepParams[d] = std::make_shared<pfacesDeviceWriteJob>(dataAccessDevice, KERNEL_MONO_SYNTH_BITMAP_GFP_PREFIX_FUNC_IDX, KERNEL_MONO_SYNTH_BITMAP_GFP_PREFIX_FUNC_NUM_ARGS, KERNEL_MONO_SYNTH_BITMAP_GFP_PREFIX_FUNCARG_SWEEP_PARAMS_IDX);
+		}
+	}
 
     instr_readNextStateTable->setAsReadDeviceBuffer(job_readNextStateTable);
     instr_writeNextStateTable->setAsWriteDeviceBuffer(job_writeNextStateTable);
@@ -422,6 +520,13 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     instr_writeBasisFlatIdx->setAsWriteDeviceBuffer(job_writeBasisFlatIdx);
     instr_writeBasisList->setAsWriteDeviceBuffer(job_writeBasisList);
     instr_writeBasisListSize->setAsWriteDeviceBuffer(job_writeBasisListSize);
+	if (m_use_bitmap_gfp) {
+		instr_writeBitmapIn->setAsWriteDeviceBuffer(job_writeBitmapIn);
+		instr_readBitmapIn->setAsReadDeviceBuffer(job_readBitmapIn);
+		instr_writeBitmapOut->setAsWriteDeviceBuffer(job_writeBitmapOut);
+		instr_writeBitmapChangedFlag->setAsWriteDeviceBuffer(job_writeBitmapChangedFlag);
+		instr_readBitmapChangedFlag->setAsReadDeviceBuffer(job_readBitmapChangedFlag);
+	}
 
 	instr_BlockingSyncPoint->setAsBlockingSyncPoint();
     instr_logOff->setAsLogOff();
@@ -449,9 +554,9 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 	}
 	instructionList.push_back(instr_writeRuntimeParams);
 
-	if (m_use_inline_dynamics && m_use_tt_only && m_use_tt_only_gpu) {
+	if (use_inline_transition_free) {
 		// Inline dynamics mode: no precompute needed.
-		// Transitions are computed on-the-fly in the column_update kernel.
+		// Transitions are computed on-the-fly in the selected GFP kernel.
 		instructionList.push_back(std::make_shared<pfacesInstruction>());
 		instructionList.back()->setAsBlockingSyncPoint();
 		auto instr_noPrecompute = std::make_shared<pfacesInstruction>();
@@ -499,7 +604,7 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
 
 		// In GPU TT-only mode, skip reading transition table back to host.
 		// The column_update kernel reads next_state_table directly from device memory.
-		if (!(m_use_tt_only && m_use_tt_only_gpu)) {
+		if (!((m_use_tt_only && m_use_tt_only_gpu) || m_use_bitmap_gfp)) {
 			instructionList.push_back(instr_readNextStateTable);
 			instructionList.push_back(instr_BlockingSyncPoint);
 
@@ -538,7 +643,97 @@ void pfacesKernel_mono_synth::configureParallelProgram(pfacesParallelProgram& pa
     // Safe set iteration — two modes:
     // (A) GPU TT-only: binary-search columns + prefix-max sweep on device
     // (B) Standard: basis-tracking with optional CPU threshold table
-    if (m_use_tt_only && m_use_tt_only_gpu) {
+    if (m_use_bitmap_gfp) {
+        // === GPU bitmap GFP iteration ===
+        // Data pool indices for bitmap buffers:
+        //   func4 (bitmap_gfp_iterate): arg0=next_state_table(resident),
+        //   arg1=bitmap_in, arg2=bitmap_out, arg3=changed_flag,
+        //   arg4=runtime_params(resident).
+        instructionList.push_back(std::make_shared<pfacesInstruction>());
+        instructionList.back()->setAsBlockingSyncPoint();
+
+        instr_hostFuncInitBitmapGFP->setAsHostFunction(pfacesKernel_mono_synth::initBitmapGFP, "initBitmapGFP");
+        instructionList.push_back(instr_hostFuncInitBitmapGFP);
+        instructionList.push_back(instr_writeBitmapIn);
+        instructionList.push_back(instr_writeBitmapOut);
+        instructionList.push_back(instr_writeBitmapChangedFlag);
+        instructionList.push_back(std::make_shared<pfacesInstruction>());
+        instructionList.back()->setAsBlockingSyncPoint();
+
+        size_t bitmap_loop_start = instructionList.size();
+
+        instr_hostFuncPrepareBitmapGFPIteration->setAsHostFunction(pfacesKernel_mono_synth::prepareBitmapGFPIteration, "prepareBitmapGFPIteration");
+        instructionList.push_back(instr_hostFuncPrepareBitmapGFPIteration);
+        instructionList.push_back(instr_writeBitmapChangedFlag);
+
+        for (auto& job : job_execBitmapGFPIterate) {
+            auto instr = std::make_shared<pfacesInstruction>();
+            instr->setAsDeviceExecute(job);
+            instructionList.push_back(instr);
+        }
+
+        instructionList.push_back(std::make_shared<pfacesInstruction>());
+        instructionList.back()->setAsBlockingSyncPoint();
+
+        // Canonicalize the predecessor result as a lower-closed bitmap, matching
+        // the invariant used by the threshold-table and basis methods.
+        m_bitmap_gfp_sweep_dim_idx = 0;
+        for (int d = 0; d < (int)m_spCfg->getSsDim(); ++d) {
+            auto instr_set_sweep = std::make_shared<pfacesInstruction>();
+            instr_set_sweep->setAsHostFunction(pfacesKernel_mono_synth::setBitmapSweepParams, "setBitmapSweepParams");
+            instructionList.push_back(instr_set_sweep);
+
+            auto instr_ws = std::make_shared<pfacesInstruction>();
+            instr_ws->setAsWriteDeviceBuffer(job_writeBitmapSweepParams[d]);
+            instructionList.push_back(instr_ws);
+
+            for (auto& job : job_execBitmapGFPPrefix[d]) {
+                auto instr = std::make_shared<pfacesInstruction>();
+                instr->setAsDeviceExecute(job);
+                instructionList.push_back(instr);
+            }
+
+            instructionList.push_back(std::make_shared<pfacesInstruction>());
+            instructionList.back()->setAsBlockingSyncPoint();
+        }
+
+        // Keep both bitmaps resident. This device-side advance copies
+        // S_{k+1} into bitmap_in, clears bitmap_out for the next pass, and
+        // compares the full post-closure bitmap against S_k for convergence.
+        for (auto& job : job_execBitmapGFPAdvance) {
+            auto instr = std::make_shared<pfacesInstruction>();
+            instr->setAsDeviceExecute(job);
+            instructionList.push_back(instr);
+        }
+        instructionList.push_back(instr_readBitmapChangedFlag);
+        instructionList.push_back(std::make_shared<pfacesInstruction>());
+        instructionList.back()->setAsBlockingSyncPoint();
+
+        instr_hostFuncProcessBitmapGFPUpdate->setAsHostFunction(pfacesKernel_mono_synth::processBitmapGFPUpdate, "processBitmapGFPUpdate");
+        instructionList.push_back(instr_hostFuncProcessBitmapGFPUpdate);
+
+        auto instr_jumpBitmap = std::make_shared<pfacesInstruction>();
+        instr_jumpBitmap->setAsJumpNe(bitmap_loop_start);
+        instructionList.push_back(instr_jumpBitmap);
+
+        // Final bitmap is resident in bitmap_in after the last advance.
+        instructionList.push_back(instr_readBitmapIn);
+        instructionList.push_back(std::make_shared<pfacesInstruction>());
+        instructionList.back()->setAsBlockingSyncPoint();
+        instr_hostFuncFinalizeBitmapGFP->setAsHostFunction(pfacesKernel_mono_synth::finalizeBitmapGFP, "finalizeBitmapGFP");
+        instructionList.push_back(instr_hostFuncFinalizeBitmapGFP);
+
+        if (doBenchmark) {
+            instructionList.push_back(std::make_shared<pfacesInstruction>());
+            instructionList.back()->setAsBlockingSyncPoint();
+
+            instr_hostFuncBenchmarkNext->setAsHostFunction(pfacesKernel_mono_synth::benchmarkNext, "benchmarkNext");
+            instructionList.push_back(instr_hostFuncBenchmarkNext);
+
+            instr_jumpToBenchmarkStart->setAsJumpNe(benchmark_loop_start);
+            instructionList.push_back(instr_jumpToBenchmarkStart);
+        }
+    } else if (m_use_tt_only && m_use_tt_only_gpu) {
         // === GPU TT-only iteration ===
         // Data pool indices for TT-only buffers:
         //   func2 (tt_only_column_update): arg0=next_state_table(resident), arg1=tt_in(Pool[6]), arg2=tt_out(Pool[7]), arg3=changed_flag(Pool[8])
@@ -970,8 +1165,12 @@ size_t pfacesKernel_mono_synth::processSafeSetUpdate(void* pPackedKernel, void* 
         }
 
         if (!pKernel->m_tt_only_changed) {
-            // Converged — extract basis from threshold table
-            pKernel->extractBasisFromThresholdTable();
+            // Converged. RT/direct table queries do not need a basis.
+            if (pKernel->m_extract_basis) {
+                pKernel->extractBasisFromThresholdTable();
+            } else {
+                pKernel->m_safe_set_size = 0;
+            }
 
             auto compute_end = std::chrono::high_resolution_clock::now();
             double time_ms = std::chrono::duration<double, std::milli>(compute_end - pKernel->m_compute_start).count();
@@ -982,7 +1181,8 @@ size_t pfacesKernel_mono_synth::processSafeSetUpdate(void* pPackedKernel, void* 
 
             std::cout << "Run " << pKernel->m_benchmark_current_run << "/" << pKernel->m_benchmark_count
                       << ": " << pKernel->m_iterations << " iterations, "
-                      << pKernel->m_safe_set_size << " basis (extracted from TT), "
+                      << pKernel->m_safe_set_size
+                      << (pKernel->m_extract_basis ? " basis (extracted from TT), " : " basis (skipped), ")
                       << (int)time_ms << " ms" << std::endl;
             return 0;  // Stop
         }
@@ -1524,6 +1724,165 @@ void pfacesKernel_mono_synth::extractBasisFromThresholdTable() {
     }
 }
 
+void pfacesKernel_mono_synth::buildThresholdTableFromBitmap() {
+    std::memset(m_threshold_table.data(), 0, m_threshold_table_size * sizeof(int));
+    const int n = m_ss_dim;
+
+    for (size_t flat = 0; flat < x_flat_width; ++flat) {
+        if (!getPackedBit(m_bitmap_words, flat)) continue;
+
+        size_t tmp = flat;
+        int key_flat = 0;
+        int dstar_height = 0;
+        for (int d = 0; d < n; ++d) {
+            const int coord0 = (int)(tmp % X_widthPerDimension[d]);
+            tmp /= X_widthPerDimension[d];
+            if (d == m_threshold_d_star) {
+                dstar_height = coord0 + 1;
+            } else {
+                key_flat += coord0 * m_threshold_orig_to_key_stride[d];
+            }
+        }
+        if (m_threshold_table[key_flat] < dstar_height)
+            m_threshold_table[key_flat] = dstar_height;
+    }
+}
+
+// Data pool indices for bitmap GFP buffers. These follow funcs 0..3:
+// precompute (0,1), basis check (2..5), TT-only (6..9), bitmap (10..13).
+#define BITMAP_GFP_POOL_IN      10
+#define BITMAP_GFP_POOL_OUT     11
+#define BITMAP_GFP_POOL_CHANGED 12
+#define BITMAP_GFP_POOL_SWEEP   13
+
+size_t pfacesKernel_mono_synth::initBitmapGFP(void* pPackedKernel, void* pPackedParallelProgram) {
+    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
+    pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
+
+    pKernel->m_ss_dim = pKernel->m_spCfg->getSsDim();
+    pKernel->m_safe_set_size = 0;
+    pKernel->m_iterations = 0;
+    pKernel->m_bitmap_gfp_iteration = 0;
+    pKernel->m_bitmap_safe_cells = 0;
+    pKernel->m_compute_start = std::chrono::high_resolution_clock::now();
+
+    pKernel->m_bitmap_words.assign(pKernel->m_bitmap_word_count, 0xFFFFFFFFu);
+    const size_t tail_bits = pKernel->x_flat_width & 31u;
+    if (tail_bits != 0 && !pKernel->m_bitmap_words.empty()) {
+        pKernel->m_bitmap_words.back() = (1u << tail_bits) - 1u;
+    }
+
+    cl_uint* pIn = (cl_uint*)pParallelProgram->m_dataPool[BITMAP_GFP_POOL_IN].first;
+    cl_uint* pOut = (cl_uint*)pParallelProgram->m_dataPool[BITMAP_GFP_POOL_OUT].first;
+    int* pChanged = (int*)pParallelProgram->m_dataPool[BITMAP_GFP_POOL_CHANGED].first;
+    std::memcpy(pIn, pKernel->m_bitmap_words.data(), pKernel->m_bitmap_word_count * sizeof(cl_uint));
+    std::memset(pOut, 0, pKernel->m_bitmap_word_count * sizeof(cl_uint));
+    *pChanged = 0;
+
+    std::cout << "[MonoSynth] Bitmap GFP: initialized all " << pKernel->x_flat_width
+              << " grid cells as safe" << std::endl;
+    return 0;
+}
+
+size_t pfacesKernel_mono_synth::prepareBitmapGFPIteration(void* pPackedKernel, void* pPackedParallelProgram) {
+    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
+    pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
+
+    pKernel->m_bitmap_gfp_iteration++;
+    pKernel->m_iteration_start = std::chrono::high_resolution_clock::now();
+    pKernel->m_bitmap_gfp_sweep_dim_idx = 0;
+    int* pChanged = (int*)pParallelProgram->m_dataPool[BITMAP_GFP_POOL_CHANGED].first;
+    *pChanged = 0;
+    return 0;
+}
+
+size_t pfacesKernel_mono_synth::setBitmapSweepParams(void* pPackedKernel, void* pPackedParallelProgram) {
+    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
+    pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
+
+    const int d = pKernel->m_bitmap_gfp_sweep_dim_idx;
+    int stride = 1;
+    for (int k = 0; k < d; ++k) stride *= (int)pKernel->X_widthPerDimension[k];
+
+    int* pSweep = (int*)pParallelProgram->m_dataPool[BITMAP_GFP_POOL_SWEEP].first;
+    pSweep[0] = stride;
+    pSweep[1] = (int)pKernel->X_widthPerDimension[d];
+
+    pKernel->m_bitmap_gfp_sweep_dim_idx++;
+    return 0;
+}
+
+size_t pfacesKernel_mono_synth::processBitmapGFPUpdate(void* pPackedKernel, void* pPackedParallelProgram) {
+    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
+    pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
+
+    auto iter_end = std::chrono::high_resolution_clock::now();
+    double iter_ms = std::chrono::duration<double, std::milli>(iter_end - pKernel->m_iteration_start).count();
+    const int changed = *((int*)pParallelProgram->m_dataPool[BITMAP_GFP_POOL_CHANGED].first);
+
+    if (pKernel->m_iteration_stats_csv_file.is_open()) {
+        pKernel->m_iteration_stats_csv_file
+            << (pKernel->m_benchmark_current_run + 1) << ","
+            << pKernel->m_bitmap_gfp_iteration << ","
+            << pKernel->x_flat_width << ","
+            << 0 << "," << 0 << "," << 0 << ","
+            << pKernel->x_flat_width << ","
+            << iter_ms << ","
+            << iter_ms << ","
+            << 0 << "," << 0 << "," << 0 << "," << 0 << ","
+            << 0 << "," << 0 << "," << 0 << "," << 0 << "," << 0 << "\n";
+        pKernel->m_iteration_stats_csv_file.flush();
+    }
+
+    if (changed == 0) {
+        pKernel->m_iterations = pKernel->m_bitmap_gfp_iteration;
+        auto compute_end = std::chrono::high_resolution_clock::now();
+        pKernel->m_bitmap_gfp_last_ms = std::chrono::duration<double, std::milli>(compute_end - pKernel->m_compute_start).count();
+        pKernel->m_benchmark_total_time_ms += pKernel->m_bitmap_gfp_last_ms;
+        pKernel->m_benchmark_total_iterations += pKernel->m_bitmap_gfp_iteration;
+        pKernel->m_benchmark_current_run++;
+        return 0;
+    }
+
+    return 1;
+}
+
+size_t pfacesKernel_mono_synth::finalizeBitmapGFP(void* pPackedKernel, void* pPackedParallelProgram) {
+    pfacesKernel_mono_synth* pKernel = (pfacesKernel_mono_synth*)pPackedKernel;
+    pfacesParallelProgram* pParallelProgram = (pfacesParallelProgram*)pPackedParallelProgram;
+
+    const cl_uint* pIn = (const cl_uint*)pParallelProgram->m_dataPool[BITMAP_GFP_POOL_IN].first;
+    pKernel->m_bitmap_words.assign(pIn, pIn + pKernel->m_bitmap_word_count);
+
+    pKernel->m_bitmap_safe_cells = 0;
+    for (size_t i = 0; i < pKernel->m_bitmap_word_count; ++i) {
+        pKernel->m_bitmap_safe_cells += __builtin_popcount(pKernel->m_bitmap_words[i]);
+    }
+
+    if (pKernel->m_record_basis_evolution) {
+        pKernel->buildThresholdTableFromBitmap();
+        if (pKernel->m_benchmark_current_run == 1) {
+            std::ofstream out("bitmap_threshold_final.csv");
+            out << "key_flat,tau\n";
+            for (int i = 0; i < pKernel->m_threshold_table_size; ++i) {
+                if (pKernel->m_threshold_table[i] > 0)
+                    out << i << "," << pKernel->m_threshold_table[i] << "\n";
+            }
+        }
+    }
+
+    std::cout << "[MonoSynth] Safe cells: " << pKernel->m_bitmap_safe_cells << "/"
+              << pKernel->x_flat_width << " ("
+              << (100.0 * pKernel->m_bitmap_safe_cells / pKernel->x_flat_width)
+              << "%)" << std::endl;
+    std::cout << "Run " << pKernel->m_benchmark_current_run << "/"
+              << pKernel->m_benchmark_count << ": "
+              << pKernel->m_bitmap_gfp_iteration << " iterations (bitmap GFP), "
+              << pKernel->m_bitmap_safe_cells << " safe cells, "
+              << (int)pKernel->m_bitmap_gfp_last_ms << " ms" << std::endl;
+    return 0;
+}
+
 /* ================================================================
  * GPU TT-only host functions
  *
@@ -1653,9 +2012,13 @@ size_t pfacesKernel_mono_synth::processTTGPUUpdate(void* pPackedKernel, void* pP
     }
 
     if (!changed) {
-        // Converged — extract basis from threshold table
+        // Converged. RT/direct table queries do not need a basis.
         pKernel->m_iterations = pKernel->m_tt_gpu_iteration;
-        pKernel->extractBasisFromThresholdTable();
+        if (pKernel->m_extract_basis) {
+            pKernel->extractBasisFromThresholdTable();
+        } else {
+            pKernel->m_safe_set_size = 0;
+        }
 
         auto compute_end = std::chrono::high_resolution_clock::now();
         double time_ms = std::chrono::duration<double, std::milli>(compute_end - pKernel->m_compute_start).count();
@@ -1672,7 +2035,8 @@ size_t pfacesKernel_mono_synth::processTTGPUUpdate(void* pPackedKernel, void* pP
 
         std::cout << "Run " << pKernel->m_benchmark_current_run << "/" << pKernel->m_benchmark_count
                   << ": " << pKernel->m_tt_gpu_iteration << " iterations (GPU TT-only), "
-                  << pKernel->m_safe_set_size << " basis, "
+                  << pKernel->m_safe_set_size
+                  << (pKernel->m_extract_basis ? " basis, " : " basis (skipped), ")
                   << (int)time_ms << " ms" << std::endl;
         return 0;  // Stop
     }
@@ -1831,5 +2195,3 @@ void pfacesKernel_mono_synth::configureTuneParallelProgram(
 } // namespace mono_synth
 
 PFACES_REGISTER_LOADABLE_KERNEL(mono_synth::pfacesKernel_mono_synth)
-
-

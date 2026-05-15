@@ -818,10 +818,13 @@ defaultConfiguration::defaultConfiguration()
 	m_schema[809] = "benchmark_count = int";
 	m_schema[810] = "use_threshold_table = boolean";
 	m_schema[811] = "use_tt_only = boolean";
-	m_schema[812] = "use_inline_dynamics = boolean";
-	m_schema[813] = "use_prefix_sweep = boolean";
-	m_schema[814] = "threshold_d_star = int";
-	m_schema[815] = 0;
+	m_schema[812] = "use_tt_only_gpu = boolean";
+	m_schema[813] = "use_inline_dynamics = boolean";
+	m_schema[814] = "use_prefix_sweep = boolean";
+	m_schema[815] = "threshold_d_star = int";
+	m_schema[816] = "use_bitmap_gfp = boolean";
+	m_schema[817] = "extract_basis = boolean";
+	m_schema[818] = 0;
 
 
 	std::stringstream m_str;
@@ -884,9 +887,12 @@ defaultConfiguration::defaultConfiguration()
 	m_str << "benchmark_count = \"10\";\n";
 	m_str << "use_threshold_table = \"true\";\n";
 	m_str << "use_tt_only = \"false\";\n";
+	m_str << "use_tt_only_gpu = \"true\";\n";
 	m_str << "use_inline_dynamics = \"false\";\n";
 	m_str << "use_prefix_sweep = \"false\";\n";
 	m_str << "threshold_d_star = \"-1\";\n";
+	m_str << "use_bitmap_gfp = \"false\";\n";
+	m_str << "extract_basis = \"true\";\n";
 	m_str << "\n";
 	m_str << "\n";
 	m_str << "# State/Input sets\n";
@@ -1608,6 +1614,18 @@ void configReader::load_values() {
 		}
 
 		try {
+			m_use_bitmap_gfp = m_spConfigObject->readConfigValueBool("use_bitmap_gfp");
+		} catch (...) {
+			m_use_bitmap_gfp = false;
+		}
+
+		try {
+			m_extract_basis = m_spConfigObject->readConfigValueBool("extract_basis");
+		} catch (...) {
+			m_extract_basis = true;
+		}
+
+		try {
 			m_threshold_d_star = m_spConfigObject->readConfigValueInt("threshold_d_star");
 		} catch (...) {
 			// -1 means "auto-select d* as widest dimension" (legacy behavior)
@@ -1770,6 +1788,11 @@ int configReader::validate_values() {
 	std::string data(m_data);
 	if (!(data == "raw" || data == "bits" || data == "bdd")) {
 		sserrors << "\t-Data should be: raw, bitset or bdd." << std::endl;
+		ret = VALIDATE_RESULT_FAILED;
+	}
+
+	if (m_use_tt_only && m_use_bitmap_gfp) {
+		sserrors << "\t-use_tt_only and use_bitmap_gfp are mutually exclusive GFP modes." << std::endl;
 		ret = VALIDATE_RESULT_FAILED;
 	}
 
