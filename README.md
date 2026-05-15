@@ -1,44 +1,42 @@
-# pFaces-MonoSynth Threshold Experiments
+# pFaces-MonoSafe Threshold Experiments
 
 **Real-time invariant-set synthesis for monotone systems.** This repository
-contains the threshold-table, bitmap-GFP, and real-time controller experiments
+contains the threshold-table and real-time controller experiments
 behind the paper implementation.
 
-The main idea is simple: a lower-closed safe set does not need to be stored as a
-full grid or scanned as a basis. We store one threshold height per column along
-a designated dimension `threshold_d_star`, giving `O(N^(d-1))` memory and `O(1)`
-safety queries.
+The method stores one threshold height per grid column along
+`threshold_d_star`, so safe-set membership is an `O(1)` lookup with
+`O(N^(d-1))` storage instead of full-grid storage or basis scans.
+
+In the paper experiments, 3D grids with `10^10` cells
+synthesize in 141-221 ms, `10^14` cells complete within 99 s, and online
+left-turn control stays below a 100 ms cycle budget.
+
+## Preview
+
+<table>
+  <tr>
+    <td align="center">
+      <b>ACC Basis Evolution</b><br/>
+      <video src="./figures/acc_fine_basis_viridis_light.mp4" width="460" controls autoplay loop muted playsinline></video>
+    </td>
+    <td align="center">
+      <b>ACC Threshold Evolution</b><br/>
+      <video src="./figures/acc_fine_tt_viridis_light.mp4" width="460" controls autoplay loop muted playsinline></video>
+    </td>
+  </tr>
+</table>
 
 <p align="center">
-  <img src="../website_figures/threshold.png" width="720" alt="Threshold-table representation">
+  <b>Real-Time Left-Turn Controller</b><br/>
+  <video src="./figures/intersection.mp4" width="760" controls autoplay loop muted playsinline></video>
 </p>
 
-**What this enables.** The threshold iteration removes the basis scan and
-neighbor-generation bottlenecks in lazy monotone synthesis. In the paper
-experiments (`../docs/main.tex`), 3D grids with `10^10` cells synthesize in
-141-221 ms, `10^14` cells finish within 99 s, and the online left-turn
-controller remains below a 100 ms cycle budget.
+## Method
 
-## Visual Overview
+<img src="./figures/threshold.png" width="460" alt="Threshold-table representation"> 
 
-| Lazy basis iteration | Threshold iteration |
-| --- | --- |
-| <img src="../website_figures/lazy_alg.png" width="390" alt="Lazy basis algorithm"> | <img src="../website_figures/threshold_alg.png" width="510" alt="Threshold iteration algorithm"> |
-
-| Timing comparison | Speedups |
-| --- | --- |
-| <img src="../website_figures/comparison.png" width="480" alt="Lazy vs threshold timing comparison"> | <img src="../website_figures/speedups.png" width="330" alt="Threshold speedups"> |
-
-### Videos
-
-- ACC safe-set evolution: [basis](../website_figures/acc_fine_basis_viridis_light.mp4) vs [threshold table](../website_figures/acc_fine_tt_viridis_light.mp4)
-- Real-time unprotected left turn: [animation](../website_figures/intersection.mp4)
-
-<p align="center">
-  <a href="../website_figures/intersection.mp4">
-    <img src="../website_figures/intersection_last_frame.png" width="720" alt="Real-time left-turn controller animation frame">
-  </a>
-</p>
+<img src="./figures/speedups.png" width="460" alt="Threshold speedups"> 
 
 ## Setup
 
