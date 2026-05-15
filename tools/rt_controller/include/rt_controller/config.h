@@ -12,6 +12,7 @@
 #include "types.h"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -93,7 +94,7 @@ inline GridDesc build_grid(int dim,
     g.ub    = ub;
     g.sizes.resize(dim);
     for (int d = 0; d < dim; ++d) {
-        g.sizes[d] = static_cast<int>((ub[d] - lb[d]) / eta[d]) + 1;
+        g.sizes[d] = static_cast<int>(std::llround((ub[d] - lb[d]) / eta[d])) + 1;
     }
     g.recompute_total();
     return g;

@@ -20,6 +20,7 @@
 #include "types.h"
 
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -29,6 +30,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Optional: pFaces SDK direct integration
@@ -307,6 +309,9 @@ public:
         kernel_->setWriteIterationStats(false);  // no iteration_stats.csv in RT path
         kernel_->setBenchmarkCount(1);
         kernel_->setSkipCache(true);
+        if (kernel_->isUseTTOnlyGPU()) {
+            kernel_->setExtractBasis(false);
+        }
 
         // Load persisted tune results. If none exist, mark as tuned with defaults.
         // (pFaces SDK will use internal defaults when setTuned(true) is called.)
@@ -361,7 +366,13 @@ public:
 
         // Stage C: populate SafeSet from kernel threshold table
         auto tt0 = Clk::now();
-        {
+        if (kernel_->isUseBitmapGFP()) {
+            const auto& bitmap = kernel_->getBitmapWords();
+            safe_set.set_bitmap_words(
+                reinterpret_cast<const uint32_t*>(bitmap.data()),
+                kernel_->getBitmapWordCount());
+            safe_set.set_basis_size_hint(kernel_->getBasisSize());
+        } else {
             const auto& tt = kernel_->getThresholdTable();
             safe_set.set_threshold_table(
                 tt.data(),
@@ -381,7 +392,7 @@ public:
         last_detail_.transfer_ms = std::chrono::duration<double, std::milli>(tt1 - tt0).count();
         last_detail_.iterations  = kernel_->m_iterations;
         last_detail_.basis_size  = kernel_->getBasisSize();
-        last_detail_.safe_cells  = kernel_->getSafeCellCount();
+        last_detail_.safe_cells  = safe_set.count_safe_cells();
         last_detail_.total_cells = safe_set.total_cells();
 
         // Phase timing from kernel host functions
@@ -397,6 +408,245 @@ private:
     std::unique_ptr<pfacesParallelProgram> program_;
     std::shared_ptr<mono_synth::pfacesKernel_mono_synth> kernel_;
     bool compiled_;
+};
+
+#endif  // HAS_PFACES_SDK
+
+// ===========================================================================
+// Backend 2b: fast OpenCL TT-inline path for RT control
+// ===========================================================================
+#if defined(HAS_PFACES_SDK) && HAS_PFACES_SDK
+
+class FastTTInlineSynthesis : public SynthesisBackend {
+public:
+    struct Params {
+        std::string cfg_path;
+        std::string kernel_pack;
+        int device_id = 0;
+        bool has_runtime_param = true;
+    };
+
+    FastTTInlineSynthesis(const Params& params)
+        : params_(params)
+    {
+        if (!params_.kernel_pack.empty() && params_.kernel_pack.back() != '/')
+            params_.kernel_pack += '/';
+
+        machine_ = std::make_unique<pfacesMachineIdentifier>(
+            pfacesDeviceSelection{false, true, false});
+        auto all_devices = machine_->getDeviceIndicies({false, true, false});
+        if (all_devices.empty())
+            throw std::runtime_error("[FastTTInline] No GPU devices found");
+
+        size_t gpu_slot = 0;
+        if (params_.device_id >= 0 && static_cast<size_t>(params_.device_id) < all_devices.size())
+            gpu_slot = static_cast<size_t>(params_.device_id);
+        const size_t dev_idx = all_devices[gpu_slot];
+        device_ = machine_->getDevice(dev_idx);
+        context_ = std::make_unique<cl::Context>(std::vector<cl::Device>{device_});
+        queue_ = std::make_unique<cl::CommandQueue>(*context_, device_);
+
+        std::cout << "[FastTTInline] Using device " << dev_idx
+                  << ": " << machine_->getDeviceName(dev_idx) << "\n";
+
+        auto sp_cfg = std::make_shared<pfacesConfigurationReader>(
+            params_.cfg_path, "", false);
+        sp_cfg->parse(defaultConfiguration::getSchema(),
+                      defaultConfiguration::getDefaults());
+
+        const std::string kernel_scope =
+            pfacesKernelSource::getDefaultScope(*machine_, dev_idx);
+        auto sp_launch_state = std::make_shared<pfacesKernelLaunchState>(
+            "mono_synth", kernel_scope, params_.kernel_pack);
+
+        kernel_meta_ = std::make_shared<mono_synth::pfacesKernel_mono_synth>(
+            sp_launch_state, sp_cfg);
+        kernel_meta_->setRecordBasisEvolution(false);
+        kernel_meta_->setWriteIterationStats(false);
+        kernel_meta_->setBenchmarkCount(1);
+        kernel_meta_->setSkipCache(true);
+        kernel_meta_->setExtractBasis(false);
+
+        if (!kernel_meta_->isUseTTOnlyGPU() || !kernel_meta_->isUseInlineDynamics()) {
+            throw std::runtime_error(
+                "[FastTTInline] requires use_tt_only=true, use_tt_only_gpu=true, use_inline_dynamics=true");
+        }
+        if (kernel_meta_->isUseBitmapGFP()) {
+            throw std::runtime_error("[FastTTInline] requires use_bitmap_gfp=false");
+        }
+        if (kernel_meta_->m_use_prefix_sweep) {
+            throw std::runtime_error("[FastTTInline] requires use_prefix_sweep=false");
+        }
+
+        table_size_ = kernel_meta_->getThresholdTableSize();
+        d_star_ = kernel_meta_->getThresholdDStar();
+        key_strides_ = kernel_meta_->getThresholdKeyStrides();
+        const auto& grid_sizes = kernel_meta_->getGridSizes();
+        n_dstar_ = static_cast<int>(grid_sizes[d_star_]);
+
+        std::string source = load_kernel_source(params_.kernel_pack + "mono_synth.gpu.cl");
+        auto replacements = kernel_meta_->getParameterList();
+        for (size_t i = 0; i < replacements.first.size(); ++i)
+            replace_all(source, replacements.first[i], replacements.second[i]);
+        std::string unresolved = find_unresolved_macro(source);
+        if (!unresolved.empty())
+            throw std::runtime_error("[FastTTInline] unresolved kernel macro: " + unresolved);
+
+        program_ = std::make_unique<cl::Program>(*context_, source);
+        cl_int err = program_->build(std::vector<cl::Device>{device_}, "");
+        if (err != CL_SUCCESS) {
+            std::string log = program_->getBuildInfo<CL_PROGRAM_BUILD_LOG>(device_);
+            throw std::runtime_error("[FastTTInline] OpenCL build failed:\n" + log);
+        }
+        column_kernel_ = std::make_unique<cl::Kernel>(*program_, "tt_only_column_update");
+
+        dummy_next_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_ONLY, sizeof(cl_uint));
+        tt_a_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_WRITE, table_size_ * sizeof(cl_int));
+        tt_b_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_WRITE, table_size_ * sizeof(cl_int));
+        changed_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_WRITE, sizeof(cl_int));
+        runtime_params_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_ONLY, 4 * sizeof(cl_float));
+        tt_host_.resize(table_size_);
+
+        std::cout << "[FastTTInline] Kernel built once; table=" << table_size_
+                  << " entries, d*=" << d_star_ << "\n";
+    }
+
+    double synthesize(double param_value, SafeSet& safe_set) override {
+        using Clk = std::chrono::high_resolution_clock;
+        auto t0 = Clk::now();
+
+        std::fill(tt_host_.begin(), tt_host_.end(), n_dstar_);
+        cl_float rt_params[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        if (params_.has_runtime_param)
+            rt_params[0] = static_cast<cl_float>(param_value);
+
+        queue_->enqueueWriteBuffer(*tt_a_, CL_FALSE, 0, table_size_ * sizeof(cl_int), tt_host_.data());
+        queue_->enqueueWriteBuffer(*runtime_params_, CL_FALSE, 0, sizeof(rt_params), rt_params);
+
+        cl::Buffer* in = tt_a_.get();
+        cl::Buffer* out = tt_b_.get();
+        int iterations = 0;
+        auto tg0 = Clk::now();
+        while (true) {
+            cl_int changed = 0;
+            queue_->enqueueWriteBuffer(*changed_, CL_FALSE, 0, sizeof(changed), &changed);
+
+            column_kernel_->setArg(0, *dummy_next_);
+            column_kernel_->setArg(1, *in);
+            column_kernel_->setArg(2, *out);
+            column_kernel_->setArg(3, *changed_);
+            column_kernel_->setArg(4, *runtime_params_);
+            queue_->enqueueNDRangeKernel(*column_kernel_, cl::NullRange,
+                                         cl::NDRange(static_cast<size_t>(table_size_)),
+                                         cl::NullRange);
+            queue_->enqueueReadBuffer(*changed_, CL_TRUE, 0, sizeof(changed), &changed);
+            ++iterations;
+            std::swap(in, out);
+            if (changed == 0)
+                break;
+            if (iterations > n_dstar_ + 2)
+                throw std::runtime_error("[FastTTInline] exceeded convergence guard");
+        }
+        queue_->finish();
+        auto tg1 = Clk::now();
+
+        queue_->enqueueReadBuffer(*in, CL_TRUE, 0, table_size_ * sizeof(cl_int), tt_host_.data());
+        safe_set.set_threshold_table(tt_host_.data(), table_size_, d_star_, key_strides_);
+
+        auto t1 = Clk::now();
+        const double total_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        const double gpu_ms = std::chrono::duration<double, std::milli>(tg1 - tg0).count();
+
+        last_detail_.total_ms = total_ms;
+        last_detail_.gpu_exec_ms = gpu_ms;
+        last_detail_.transfer_ms = total_ms - gpu_ms;
+        last_detail_.precompute_ms = 0.0;
+        last_detail_.gfp_ms = gpu_ms;
+        last_detail_.iterations = iterations;
+        last_detail_.basis_size = 0;
+        last_detail_.safe_cells = safe_set.count_safe_cells();
+        last_detail_.total_cells = safe_set.total_cells();
+        return total_ms;
+    }
+
+private:
+    static void replace_all(std::string& s, const std::string& from, const std::string& to) {
+        if (from.empty()) return;
+        size_t pos = 0;
+        while ((pos = s.find(from, pos)) != std::string::npos) {
+            s.replace(pos, from.size(), to);
+            pos += to.size();
+        }
+    }
+
+    static std::string read_text(const std::string& path) {
+        std::ifstream ifs(path);
+        if (!ifs.is_open())
+            throw std::runtime_error("[FastTTInline] failed to read " + path);
+        std::ostringstream oss;
+        oss << ifs.rdbuf();
+        return oss.str();
+    }
+
+    static std::string find_unresolved_macro(const std::string& source) {
+        size_t pos = 0;
+        while ((pos = source.find("@@", pos)) != std::string::npos) {
+            const size_t start = pos + 2;
+            const size_t end = source.find("@@", start);
+            if (end == std::string::npos)
+                return "";
+            bool looks_like_macro = end > start;
+            for (size_t i = start; i < end; ++i) {
+                unsigned char c = static_cast<unsigned char>(source[i]);
+                if (!std::isalnum(c) && source[i] != '_') {
+                    looks_like_macro = false;
+                    break;
+                }
+            }
+            if (looks_like_macro)
+                return source.substr(pos, end + 2 - pos);
+            pos = start;
+        }
+        return "";
+    }
+
+    std::string load_kernel_source(const std::string& path) const {
+        std::string source = read_text(path);
+        const std::string marker = "@pfaces-include:\"";
+        size_t pos = 0;
+        while ((pos = source.find(marker, pos)) != std::string::npos) {
+            const size_t name_start = pos + marker.size();
+            const size_t name_end = source.find('"', name_start);
+            if (name_end == std::string::npos)
+                throw std::runtime_error("[FastTTInline] malformed include directive");
+            const std::string include_name = source.substr(name_start, name_end - name_start);
+            const size_t line_end = source.find('\n', name_end);
+            const size_t replace_end = (line_end == std::string::npos) ? name_end + 1 : line_end + 1;
+            const std::string include_text = read_text(params_.kernel_pack + include_name);
+            source.replace(pos, replace_end - pos, include_text + "\n");
+            pos += include_text.size() + 1;
+        }
+        return source;
+    }
+
+    Params params_;
+    std::unique_ptr<pfacesMachineIdentifier> machine_;
+    cl::Device device_;
+    std::unique_ptr<cl::Context> context_;
+    std::unique_ptr<cl::CommandQueue> queue_;
+    std::shared_ptr<mono_synth::pfacesKernel_mono_synth> kernel_meta_;
+    std::unique_ptr<cl::Program> program_;
+    std::unique_ptr<cl::Kernel> column_kernel_;
+    std::unique_ptr<cl::Buffer> dummy_next_;
+    std::unique_ptr<cl::Buffer> tt_a_;
+    std::unique_ptr<cl::Buffer> tt_b_;
+    std::unique_ptr<cl::Buffer> changed_;
+    std::unique_ptr<cl::Buffer> runtime_params_;
+    std::vector<int> tt_host_;
+    int table_size_ = 0;
+    int d_star_ = 0;
+    int n_dstar_ = 0;
+    std::vector<int> key_strides_;
 };
 
 #endif  // HAS_PFACES_SDK
@@ -455,6 +705,13 @@ inline std::unique_ptr<SynthesisBackend> create_synthesis(
         p.kernel_pack = "../../kernel-pack";
         p.device_id   = 1;
         return std::make_unique<DirectSynthesis>(p);
+    }
+    if (mode == "fast_tt") {
+        FastTTInlineSynthesis::Params p;
+        p.cfg_path    = extra_path;
+        p.kernel_pack = "../../kernel-pack";
+        p.device_id   = 1;
+        return std::make_unique<FastTTInlineSynthesis>(p);
     }
 #endif
     throw std::runtime_error("Unknown synthesis mode: " + mode);

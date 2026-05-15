@@ -99,6 +99,21 @@ public:
     }
 
     /**
+     * Set a bit-packed bitmap directly from the mono_synth bitmap GFP output.
+     * Word j stores cells [32*j, 32*j+31], dim 0 fastest.
+     */
+    void set_bitmap_words(const uint32_t* words, size_t word_count) {
+        bitmap_words_.assign(words, words + word_count);
+        has_bitmap_ = true;
+        has_tt_ = false;
+        bitmap_safe_cells_ = 0;
+        for (uint32_t w : bitmap_words_) {
+            bitmap_safe_cells_ += __builtin_popcount(w);
+        }
+        last_build_ms_ = 0.0;
+    }
+
+    /**
      * Load basis from CSV file.
      * Supports two formats:
      *   (a) pFaces evolution CSV: "iteration,idx0,idx1,..." with header.
@@ -267,6 +282,11 @@ public:
 
     /// Check if a grid-index cell is in the safe set.  O(1).
     inline bool is_safe_grid(const int* idx) const {
+        if (has_bitmap_) {
+            int flat = grid_.flatten(idx);
+            if (flat < 0 || flat >= grid_.total_cells) return false;
+            return (bitmap_words_[flat >> 5] & (uint32_t(1) << (flat & 31))) != 0;
+        }
         if (!has_tt_) return false;
         int key_flat = 0;
         for (int d = 0; d < grid_.n_dim; ++d) {
@@ -309,7 +329,7 @@ public:
             // Check go sub-SafeSet (or bypass if oncoming 2 has passed)
             bool b_ok = false;
             if (onc_fulldim_b_ >= 0 && x[onc_fulldim_b_] >= bypass_threshold_) {
-                b_ok = true;  // oncoming 2 past collision zone → go satisfied
+                b_ok = true;  // oncoming 2 past collision zone -> go satisfied
             } else {
                 double xb[MAX_DIM];
                 for (size_t i = 0; i < dims_b_.size(); ++i) xb[i] = x[dims_b_[i]];
@@ -437,13 +457,13 @@ public:
         if (grid_.n_dim > 2) state[2] = s_onc;
         return safe_range_along_dim(0, state);
     }
-    int count_safe_cells() const {
+    int64_t count_safe_cells() const {
         if (is_dual_proxy_) {
-            int ca = dual_a_ ? dual_a_->count_safe_cells() : 0;
-            int cb = dual_b_ ? dual_b_->count_safe_cells() : 0;
+            int64_t ca = dual_a_ ? dual_a_->count_safe_cells() : 0;
+            int64_t cb = dual_b_ ? dual_b_->count_safe_cells() : 0;
             return (ca + cb) / 2;
         }
-        return tt_safe_cells_;
+        return has_bitmap_ ? bitmap_safe_cells_ : tt_safe_cells_;
     }
 
     double last_build_ms() const { return last_build_ms_; }
@@ -528,6 +548,7 @@ private:
     GridDesc              grid_;
     std::vector<int>      priorities_;
     std::vector<std::vector<int>> basis_;
+    std::vector<uint32_t> bitmap_words_;
     double                last_build_ms_ = 0.0;
     int                   basis_size_hint_ = 0;
 
@@ -542,12 +563,14 @@ private:
     double                bypass_threshold_ = 10.0;  ///< Oncoming has passed collision zone
 
     // Threshold table (replaces bitmap for O(1) lookup in GPU TT-only mode)
+    bool                  has_bitmap_ = false;
+    int64_t               bitmap_safe_cells_ = 0;
     bool                  has_tt_ = false;
     std::vector<int>      tt_data_;
     int                   tt_size_ = 0;
     int                   tt_d_star_ = 0;
     std::vector<int>      tt_key_strides_;
-    int                   tt_safe_cells_ = 0;
+    int64_t               tt_safe_cells_ = 0;
 };
 
 }  // namespace rt_ctrl

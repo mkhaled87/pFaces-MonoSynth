@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-visualize.py — Post-hoc visualization for MonoSafe real-time controller logs.
+visualize.py — Post-hoc visualization for real-time controller logs.
 
 Reads a CSV log file produced by the rt_controller simulation and generates
 a comprehensive set of plots:
@@ -39,7 +39,7 @@ import pandas as pd
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="MonoSafe real-time controller log visualization"
+        description="Real-time controller log visualization"
     )
     p.add_argument("log", type=str, help="Path to sim_log.csv")
     p.add_argument(
@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated input labels (e.g. torque).",
     )
     p.add_argument(
-        "--dpi", type=int, default=150, help="Figure resolution (default: 150)"
+        "--dpi", type=int, default=220, help="Figure resolution (default: 220)"
     )
     p.add_argument(
         "--style",
@@ -199,7 +199,7 @@ def plot_states(df: pd.DataFrame, x_cols: list[str], s_lab: list[str],
     import matplotlib.pyplot as plt
 
     n = len(x_cols)
-    fig, axes = plt.subplots(n, 1, figsize=(12, 2.5 * n), sharex=True)
+    fig, axes = plt.subplots(n, 1, figsize=(14, 3.1 * n), sharex=True)
     if n == 1:
         axes = [axes]
 
@@ -213,7 +213,7 @@ def plot_states(df: pd.DataFrame, x_cols: list[str], s_lab: list[str],
         is_safe = df["is_safe_bool"].values
         _shade_safety(ax, t, is_safe)
 
-        ax.plot(t, x, color=c, linewidth=1.8, zorder=5)
+        ax.plot(t, x, color=c, linewidth=2.4, zorder=5)
 
         # For dim 0 (s_ego): overlay safe range bounds
         if i == 0 and "safe_s_lo" in df.columns and "safe_s_hi" in df.columns:
@@ -229,8 +229,8 @@ def plot_states(df: pd.DataFrame, x_cols: list[str], s_lab: list[str],
                 ax.plot(t[valid], hi[valid], color=COLORS["safe"],
                         linewidth=1.0, alpha=0.5, linestyle="--", zorder=3)
 
-        ax.set_ylabel(s_lab[i] if i < len(s_lab) else col, fontsize=11)
-        ax.tick_params(labelsize=9)
+        ax.set_ylabel(s_lab[i] if i < len(s_lab) else col, fontsize=13)
+        ax.tick_params(labelsize=11)
 
         # Mark resynthesis events
         resynth_t = df.loc[df["resynth"], "time"].values
@@ -238,8 +238,8 @@ def plot_states(df: pd.DataFrame, x_cols: list[str], s_lab: list[str],
             ax.axvline(rt, color=COLORS["resynth"], linestyle="--",
                        linewidth=0.8, alpha=0.7, zorder=3)
 
-    axes[-1].set_xlabel("Time (s)", fontsize=11)
-    axes[0].set_title("State Trajectories", fontsize=13, fontweight="bold")
+    axes[-1].set_xlabel("Time (s)", fontsize=13)
+    axes[0].set_title("State Trajectories", fontsize=16, fontweight="bold")
 
     # Legend for first axis
     from matplotlib.patches import Patch
@@ -250,7 +250,7 @@ def plot_states(df: pd.DataFrame, x_cols: list[str], s_lab: list[str],
         Line2D([0], [0], color=COLORS["resynth"], linestyle="--",
                linewidth=1, label="Resynthesis"),
     ]
-    axes[0].legend(handles=legend_elems, loc="upper right", fontsize=8,
+    axes[0].legend(handles=legend_elems, loc="upper right", fontsize=11,
                    framealpha=0.8)
 
     fig.tight_layout()
@@ -266,7 +266,7 @@ def plot_controls(df: pd.DataFrame, u_cols: list[str], u_lab: list[str],
     import matplotlib.pyplot as plt
 
     n = len(u_cols)
-    fig, axes = plt.subplots(n, 1, figsize=(12, 2.5 * n), sharex=True)
+    fig, axes = plt.subplots(n, 1, figsize=(14, 3.2 * n), sharex=True)
     if n == 1:
         axes = [axes]
 
@@ -277,15 +277,15 @@ def plot_controls(df: pd.DataFrame, u_cols: list[str], u_lab: list[str],
         c = COLORS["control"][i % len(COLORS["control"])]
 
         # Step-style plot (ZOH control)
-        ax.step(t, u, where="post", color=c, linewidth=1.5, zorder=5)
-        ax.set_ylabel(u_lab[i] if i < len(u_lab) else col, fontsize=11)
-        ax.tick_params(labelsize=9)
+        ax.step(t, u, where="post", color=c, linewidth=2.4, zorder=5)
+        ax.set_ylabel(u_lab[i] if i < len(u_lab) else col, fontsize=13)
+        ax.tick_params(labelsize=11)
         ax.axhline(0, color=COLORS["grid"], linewidth=0.5)
 
         _shade_safety(ax, t, df["is_safe_bool"].values)
 
-    axes[-1].set_xlabel("Time (s)", fontsize=11)
-    axes[0].set_title("Control Inputs", fontsize=13, fontweight="bold")
+    axes[-1].set_xlabel("Time (s)", fontsize=13)
+    axes[0].set_title("Control Inputs", fontsize=16, fontweight="bold")
 
     fig.tight_layout()
     _save_or_show(fig, fig_dir, "controls.png", dpi)
@@ -312,7 +312,7 @@ def plot_phase(df: pd.DataFrame, x_cols: list[str], s_lab: list[str],
 
     ncols = min(3, len(pairs))
     nrows = (len(pairs) + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4.5 * nrows))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.8 * ncols, 5.0 * nrows))
     if len(pairs) == 1:
         axes = np.array([axes])
     axes = np.atleast_2d(axes)
@@ -329,7 +329,7 @@ def plot_phase(df: pd.DataFrame, x_cols: list[str], s_lab: list[str],
         segments = np.concatenate([points[:-1], points[1:]], axis=1)
         colors = [COLORS["safe"] if s else COLORS["unsafe"] for s in is_safe[:-1]]
 
-        lc = LineCollection(segments, colors=colors, linewidths=1.5, zorder=5)
+        lc = LineCollection(segments, colors=colors, linewidths=2.2, zorder=5)
         ax.add_collection(lc)
 
         # Start/end markers
@@ -338,17 +338,18 @@ def plot_phase(df: pd.DataFrame, x_cols: list[str], s_lab: list[str],
         ax.plot(xi[-1], xj[-1], "s", color="#2d3436", markersize=8,
                 zorder=10, label="End")
 
-        ax.set_xlabel(s_lab[i] if i < len(s_lab) else x_cols[i], fontsize=10)
-        ax.set_ylabel(s_lab[j] if j < len(s_lab) else x_cols[j], fontsize=10)
+        ax.set_xlabel(s_lab[i] if i < len(s_lab) else x_cols[i], fontsize=12)
+        ax.set_ylabel(s_lab[j] if j < len(s_lab) else x_cols[j], fontsize=12)
+        ax.tick_params(labelsize=11)
         ax.autoscale_view()
-        ax.legend(fontsize=8)
-        ax.set_title(f"Phase: {x_cols[i]} vs {x_cols[j]}", fontsize=10)
+        ax.legend(fontsize=10)
+        ax.set_title(f"Phase: {x_cols[i]} vs {x_cols[j]}", fontsize=12)
 
     # Hide unused axes
     for idx in range(len(pairs), axes.size):
         axes.flat[idx].set_visible(False)
 
-    fig.suptitle("State-Space Trajectories", fontsize=13, fontweight="bold", y=1.01)
+    fig.suptitle("State-Space Trajectories", fontsize=16, fontweight="bold", y=1.01)
     fig.tight_layout()
     _save_or_show(fig, fig_dir, "phase.png", dpi)
 
@@ -376,7 +377,7 @@ def plot_timing(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> None:
     bar_w    = dt * 0.75
     has_dual = synth_wait_ms.sum() > 0 or synth_go_ms.sum() > 0
 
-    fig, ax = plt.subplots(figsize=(14, 5), facecolor="white")
+    fig, ax = plt.subplots(figsize=(16, 6.2), facecolor="white")
 
     # Safety background shading
     for k in range(n):
@@ -401,6 +402,13 @@ def plot_timing(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> None:
     mean_ctrl = ctrl_ms.mean()
     ax.axhline(mean_ctrl, color="#2980b9", linestyle="--", linewidth=1.2,
                alpha=0.7, label=f"Ctrl mean: {mean_ctrl:.1f} ms", zorder=6)
+    synth_times = synth_ms[synth_ms > 0.0]
+    if len(synth_times) > 0:
+        synth_std = synth_times.std(ddof=1) if len(synth_times) > 1 else 0.0
+        ax.axhline(synth_times.mean(), color="#e67e22", linestyle="--",
+                   linewidth=1.2, alpha=0.7,
+                   label=f"Synth mean+-std: {synth_times.mean():.1f}+-{synth_std:.1f} ms",
+                   zorder=6)
 
     # Resynthesis step markers
     resynth_t = df.loc[df["resynth"], "time"].values
@@ -408,13 +416,14 @@ def plot_timing(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> None:
         ax.axvline(rt, color=COLORS["resynth"], linestyle=":",
                    linewidth=1.2, alpha=0.8, zorder=4)
 
-    ax.set_xlabel("Time (s)", fontsize=11)
-    ax.set_ylabel("Computation time (ms)", fontsize=11)
+    ax.set_xlabel("Time (s)", fontsize=13)
+    ax.set_ylabel("Computation time (ms)", fontsize=13)
     ax.set_title("Per-Step Computation Time Breakdown",
-                 fontsize=13, fontweight="bold")
+                 fontsize=16, fontweight="bold")
     ax.set_xlim(t[0] - dt, t[-1] + dt)
-    ax.set_ylim(0, (ctrl_ms + synth_ms).max() * 1.18)
-    ax.legend(fontsize=10, framealpha=0.9)
+    ax.set_ylim(0, (ctrl_ms + synth_ms).max() * 1.24)
+    ax.tick_params(labelsize=11)
+    ax.legend(fontsize=11, framealpha=0.92)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.grid(axis="y", alpha=0.2)
@@ -424,7 +433,7 @@ def plot_timing(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> None:
     handles, labels = ax.get_legend_handles_labels()
     handles += [Patch(fc=COLORS["safe"],   alpha=0.25, label="Safe step"),
                 Patch(fc=COLORS["unsafe"], alpha=0.25, label="Unsafe step")]
-    ax.legend(handles=handles, fontsize=9, framealpha=0.9)
+    ax.legend(handles=handles, fontsize=11, framealpha=0.92)
 
     fig.tight_layout()
     _save_or_show(fig, fig_dir, "timing.png", dpi)
@@ -443,7 +452,7 @@ def plot_param_safety(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> Non
     """
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True,
+    fig, axes = plt.subplots(3, 1, figsize=(14, 9.5), sharex=True,
                              facecolor="white")
     t = df["time"].values
     dt = (t[1] - t[0]) if len(t) > 1 else 0.5
@@ -470,9 +479,10 @@ def plot_param_safety(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> Non
         ax.axvline(rt, color=COLORS["resynth"], linestyle=":",
                    linewidth=1.0, alpha=0.7, zorder=3)
     _shade(ax)
-    ax.set_ylabel("Value", fontsize=11)
-    ax.set_title("Parameter & State", fontsize=12, fontweight="bold")
-    ax.legend(fontsize=10, framealpha=0.9)
+    ax.set_ylabel("Value", fontsize=13)
+    ax.set_title("Parameter & State", fontsize=15, fontweight="bold")
+    ax.legend(fontsize=11, framealpha=0.9)
+    ax.tick_params(labelsize=11)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
@@ -484,11 +494,12 @@ def plot_param_safety(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> Non
     ax.fill_between(t, 0, 1, where=~is_safe, color=COLORS["unsafe"],
                     alpha=0.30, step="post")
     ax.step(t, is_f, where="post", color="#2d3436", linewidth=1.5, zorder=5)
-    ax.set_ylabel("Certified", fontsize=11)
+    ax.set_ylabel("Certified", fontsize=13)
     ax.set_yticks([0, 1])
     ax.set_yticklabels(["No", "Yes"])
     ax.set_ylim(-0.1, 1.1)
-    ax.set_title("Safety Certification", fontsize=12, fontweight="bold")
+    ax.set_title("Safety Certification", fontsize=15, fontweight="bold")
+    ax.tick_params(labelsize=11)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
@@ -500,8 +511,9 @@ def plot_param_safety(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> Non
                   color=COLORS["safe"], linewidth=1.8, zorder=5,
                   label="Basis |B|")
     _shade(ax)
-    ax.set_ylabel("Basis Size", fontsize=11)
-    ax.set_xlabel("Time (s)", fontsize=11)
+    ax.set_ylabel("Basis Size", fontsize=13)
+    ax.set_xlabel("Time (s)", fontsize=13)
+    ax.tick_params(labelsize=11)
     ax.spines["top"].set_visible(False)
 
     # Right axis: safe fraction (%)
@@ -511,14 +523,14 @@ def plot_param_safety(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> Non
         ln2 = ax2.step(t, safe_pct, where="post",
                        color="#8E44AD", linewidth=1.8, linestyle="--",
                        zorder=5, label="Safe fraction %")
-        ax2.set_ylabel("Safe Fraction (%)", fontsize=11, color="#8E44AD")
-        ax2.tick_params(axis="y", labelcolor="#8E44AD")
+        ax2.set_ylabel("Safe Fraction (%)", fontsize=13, color="#8E44AD")
+        ax2.tick_params(axis="y", labelcolor="#8E44AD", labelsize=11)
         ax2.spines["top"].set_visible(False)
         # Combined legend
         lines = ln1 + ln2
         labels = [l.get_label() for l in lines]
-        ax.legend(lines, labels, fontsize=9, loc="upper right", framealpha=0.9)
-    ax.set_title("Safe Set Size", fontsize=12, fontweight="bold")
+        ax.legend(lines, labels, fontsize=11, loc="upper right", framealpha=0.9)
+    ax.set_title("Safe Set Size", fontsize=15, fontweight="bold")
 
     fig.tight_layout()
     _save_or_show(fig, fig_dir, "param_safety.png", dpi)
@@ -552,10 +564,11 @@ def plot_summary(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> None:
 
     if resynth_count > 0:
         synth_times = df.loc[df["resynth"], "synth_ms"]
-        stats.append(("Synth time (mean)", f"{synth_times.mean():.1f} ms"))
+        synth_std = synth_times.std(ddof=1) if len(synth_times) > 1 else 0.0
+        stats.append(("Synth time (mean+-std)", f"{synth_times.mean():.1f}+-{synth_std:.1f} ms"))
         stats.append(("Synth time (max)", f"{synth_times.max():.1f} ms"))
 
-    fig, ax = plt.subplots(figsize=(6, 0.4 * len(stats) + 1))
+    fig, ax = plt.subplots(figsize=(7.5, 0.48 * len(stats) + 1.2))
     ax.axis("off")
 
     table = ax.table(
@@ -566,8 +579,8 @@ def plot_summary(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> None:
         cellLoc="left",
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.scale(1, 1.5)
+    table.set_fontsize(11)
+    table.scale(1, 1.65)
 
     # Style header
     for j in range(2):
@@ -586,7 +599,7 @@ def plot_summary(df: pd.DataFrame, fig_dir: Optional[str], dpi: int) -> None:
             elif i % 2 == 0:
                 cell.set_facecolor("#f0f3f4")
 
-    fig.suptitle("Simulation Summary", fontsize=14, fontweight="bold")
+    fig.suptitle("Simulation Summary", fontsize=16, fontweight="bold")
     fig.tight_layout()
     _save_or_show(fig, fig_dir, "summary.png", dpi)
 
@@ -623,7 +636,8 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
     """
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation, FFMpegWriter
-    from matplotlib.patches import Rectangle
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch, Rectangle
     from matplotlib.gridspec import GridSpec
     import matplotlib.transforms as _mtf
 
@@ -729,6 +743,16 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
                      float(np.min(s_ego)), -50.0)
     path_s_max = max(float(np.nanmax(finite_hi)) if finite_hi.size else float(np.max(s_ego)),
                      float(np.max(s_ego)), 10.0)
+    # Fixed publication viewport focused on the intersection. Vehicles outside
+    # this viewport naturally enter/leave the frame instead of moving the camera.
+    road_xlim = (
+        min(-52.0, float(np.min(ego_pts[:, 0])) - 6.0),
+        max(52.0, float(np.max(ego_pts[:, 0])) + 12.0),
+    )
+    road_ylim = (
+        min(-8.0, float(np.min(ego_pts[:, 1])) - 6.0),
+        max(22.0, float(np.max(ego_pts[:, 1])) + 6.0),
+    )
 
     # ── fixed limits for time-series subplots ─────────────────────
     tp   = dt * 0.5
@@ -798,20 +822,18 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
                  [wy - py * CAR_W * 0.38, wy + py * CAR_W * 0.38],
                  c="white", lw=1.8, zorder=11)
         ax_.text(pos[0], pos[1], label, ha="center", va="center",
-                 fontsize=6, fontweight="bold", color="white", zorder=12)
+                 fontsize=8, fontweight="bold", color="white", zorder=12)
 
-    # ── figure + gridspec (road left, 2×2 right) ──────────────────
-    # Right panel: 2 columns × 2 rows → 4 subplots
-    # Overall: 3-column gridspec: road | sp_col_a | sp_col_b
-    fig = plt.figure(figsize=(18, 9), facecolor="white")
-    gs  = GridSpec(2, 3, figure=fig, width_ratios=[2.0, 1, 1],
-                   hspace=0.42, wspace=0.30,
-                   left=0.03, right=0.97, top=0.92, bottom=0.08)
-    a_rd = fig.add_subplot(gs[:, 0])          # road (spans both rows)
-    a_vv = fig.add_subplot(gs[0, 1])          # velocities  (top-left)
-    a_ct = fig.add_subplot(gs[0, 2])          # control     (top-right)
-    a_bs = fig.add_subplot(gs[1, 1])          # basis size  (bottom-left)
-    a_tm = fig.add_subplot(gs[1, 2])          # timing      (bottom-right)
+    # ── figure + gridspec: fixed road scene above, diagnostics below ───────
+    fig = plt.figure(figsize=(22, 12), facecolor="white")
+    gs  = GridSpec(2, 4, figure=fig, height_ratios=[1.45, 1.0],
+                   hspace=0.34, wspace=0.28,
+                   left=0.028, right=0.985, top=0.92, bottom=0.075)
+    a_rd = fig.add_subplot(gs[0, :])          # road scene
+    a_vv = fig.add_subplot(gs[1, 0])          # velocities
+    a_ct = fig.add_subplot(gs[1, 1])          # control
+    a_bs = fig.add_subplot(gs[1, 2])          # safe fraction
+    a_tm = fig.add_subplot(gs[1, 3])          # timing
 
     # ── helper: safety background spans ───────────────────────────
     def _spans(ax_, idx_):
@@ -825,50 +847,33 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
                         alpha=0.07, zorder=0)
 
     def _style(ax_, ylabel, title, xlabel=None):
-        ax_.tick_params(labelsize=8)
-        ax_.grid(axis="y", alpha=0.15)
-        ax_.set_ylabel(ylabel, fontsize=9)
-        ax_.set_title(title, fontsize=10, fontweight="bold", pad=3)
+        ax_.tick_params(labelsize=10.5)
+        ax_.grid(axis="y", alpha=0.18)
+        ax_.set_ylabel(ylabel, fontsize=12)
+        ax_.set_title(title, fontsize=13, fontweight="bold", pad=6)
         for sp in ("top", "right"):
             ax_.spines[sp].set_visible(False)
         if xlabel:
-            ax_.set_xlabel(xlabel, fontsize=9)
+            ax_.set_xlabel(xlabel, fontsize=12)
         else:
             ax_.tick_params(labelbottom=False)
 
     # ── per-frame draw ─────────────────────────────────────────────
     def _draw(idx):
-        # ══ LEFT: ROAD SCENE (equal-aspect tracking camera) ══════
+        # ══ LEFT: ROAD SCENE (fixed equal-aspect camera) ══════
         a_rd.clear()
         a_rd.set_facecolor("white")
         a_rd.axis("off")
 
-        # Tracking viewport: show all vehicles with margin, equal aspect
         ex, ey = ego_pts[idx]
         ox, oy = onc_pts[idx]
-        all_x = [ex, ox]
-        all_y = [ey, oy]
-        if has_vehicle_2:
-            o2x, o2y = onc2_pts[idx]
-            all_x.append(o2x)
-            all_y.append(o2y)
-        cx  = (min(all_x) + max(all_x)) / 2
-        cy  = (max(all_y) + min(-hw, -hw)) / 2 + 2.0
-        span_x = (max(all_x) - min(all_x)) + 8.0
-        span_y = max(span_x, 16.0)   # at least 24 m tall
-        # Enforce panel aspect ratio (≈ 2/3 of 18"=12" wide, full 9" tall)
-        panel_w, panel_h = 12.0, 7.5
-        target_ar = panel_w / panel_h   # ~1.6
-        if span_x / span_y < target_ar:
-            span_x = span_y * target_ar
-        else:
-            span_y = span_x / target_ar
-        a_rd.set_xlim(cx - span_x / 2, cx + span_x / 2)
-        a_rd.set_ylim(cy - span_y / 2, cy + span_y / 2)
+        a_rd.set_xlim(*road_xlim)
+        a_rd.set_ylim(*road_ylim)
         a_rd.set_aspect("equal", adjustable="box")
 
         xl = a_rd.get_xlim()
         yl = a_rd.get_ylim()
+        span_x = xl[1] - xl[0]
 
         # E–W road surface
         a_rd.fill_between([xl[0], xl[1]], -hw, hw,
@@ -907,7 +912,7 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
 
         # Conflict-zone label
         a_rd.text(0, 0, "CONFLICT\nZONE", ha="center", va="center",
-                  fontsize=6.5, color=C["dng"], alpha=0.5,
+                  fontsize=9.5, color=C["dng"], alpha=0.55,
                   fontweight="bold", zorder=4)
 
         # Ego path guide
@@ -957,15 +962,16 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
             _draw_boundary_tick(a_rd, hi_i, C["safe"])
 
         if np.isfinite(lo_i) and np.isfinite(hi_i):
-            if abs(hi_i - lo_i) < 1e-9:
-                slice_txt = f"safe $s_{{ego}}$: singleton at {lo_i:.1f} m"
+            slice_a, slice_b = sorted((lo_i, hi_i))
+            if abs(slice_b - slice_a) < 1e-9:
+                slice_txt = f"safe $s_{{ego}}$: singleton at {slice_a:.1f} m"
             else:
-                slice_txt = f"safe $s_{{ego}}$: [{lo_i:.1f}, {hi_i:.1f}] m"
-            a_rd.text(0.02, 0.82, slice_txt,
-                      transform=a_rd.transAxes, fontsize=8, va="top",
+                slice_txt = f"safe $s_{{ego}}$: [{slice_a:.1f}, {slice_b:.1f}] m"
+            a_rd.text(0.025, 0.045, slice_txt,
+                      transform=a_rd.transAxes, fontsize=11, va="bottom",
                       color=C["txt"], zorder=20,
-                      bbox=dict(boxstyle="round,pad=0.25", fc="white",
-                                ec=C["safe"], alpha=0.92, lw=1.2))
+                      bbox=dict(boxstyle="round,pad=0.35", fc="white",
+                                ec=C["safe"], alpha=0.94, lw=1.4))
         elif np.isnan(lo_i) and np.isnan(hi_i):
             cat_col = CAT_COLOR.get(cat_i, C["unsafe"])
             if len(g_vis) > 1:
@@ -975,11 +981,11 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
                 a_rd.plot(g_vis[:, 0], g_vis[:, 1],
                           c=cat_col, lw=2.0, alpha=0.55,
                           solid_capstyle="round", zorder=5.33)
-            a_rd.text(0.02, 0.82, "safe $s_{ego}$ slice: unavailable",
-                      transform=a_rd.transAxes, fontsize=8, va="top",
+            a_rd.text(0.025, 0.045, "safe $s_{ego}$ slice: unavailable",
+                      transform=a_rd.transAxes, fontsize=11, va="bottom",
                       color=cat_col, zorder=20,
-                      bbox=dict(boxstyle="round,pad=0.25", fc="white",
-                                ec=cat_col, alpha=0.92, lw=1.2))
+                      bbox=dict(boxstyle="round,pad=0.35", fc="white",
+                                ec=cat_col, alpha=0.94, lw=1.4))
         # Ego trail
         for k in range(idx):
             tc = CAT_COLOR.get(int(safety_cat[k]), C["unsafe"])
@@ -1011,57 +1017,54 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
             _draw_car(a_rd, onc2_pts[idx], 180.0, C["onc2"], "2")
 
         # Road direction arrows (relative to current viewport)
-        for ax_x in np.arange(xl[0] + 8, ex - 10, 18):
+        for ax_x in np.arange(xl[0] + 8, xl[1] - 10, 18):
             a_rd.annotate("", xy=(ax_x + 5, -lane_off),
                           xytext=(ax_x, -lane_off),
                           arrowprops=dict(arrowstyle="-|>", color="white",
-                                         lw=0.7, alpha=0.3), zorder=4)
-        for ax_x in np.arange(ox + 10, xl[1] - 8, 18):
+                                         lw=1.0, alpha=0.35), zorder=4)
+        for ax_x in np.arange(xl[0] + 13, xl[1] - 8, 18):
             a_rd.annotate("", xy=(ax_x - 5, lane_off),
                           xytext=(ax_x, lane_off),
                           arrowprops=dict(arrowstyle="-|>", color="white",
-                                         lw=0.7, alpha=0.3), zorder=4)
+                                         lw=1.0, alpha=0.35), zorder=4)
 
-        # Timestamp + safety badge
-        a_rd.text(0.02, 0.98, f"$t = {times[idx]:.1f}\\,$s",
-                  transform=a_rd.transAxes, fontsize=13, va="top",
-                  fontweight="bold", color=C["txt"], zorder=20)
+        # Readable status box, placed like a legend inside the fixed frame.
         slab = CAT_LABEL.get(cat_i, "UNSAFE")
         scol = CAT_COLOR.get(cat_i, C["unsafe"])
-        a_rd.text(0.02, 0.89, slab, transform=a_rd.transAxes, fontsize=9,
-                  va="top", fontweight="bold", color=scol,
-                  bbox=dict(boxstyle="round,pad=0.3", fc="white",
-                            ec=scol, alpha=0.9, lw=1.5), zorder=20)
-        a_rd.text(0.02, 0.74,
-                  "regions:\n"
-                  "\u25A0 unsafe\n"
-                  "\u25A0 safe wait\n"
-                  "\u25A0 safe go\n"
-                  "\u25A0 safe both",
-                  transform=a_rd.transAxes, fontsize=7.2, va="top",
-                  color=C["txt"], zorder=20,
-                  bbox=dict(boxstyle="round,pad=0.25", fc="white",
-                            ec=C["guide"], alpha=0.9, lw=1.0))
-        legend_x0 = 0.035
-        legend_y0 = 0.705
-        dy = 0.038
-        for i_cat, cat in enumerate([0, 1, 2, 3]):
-            y_ = legend_y0 - i_cat * dy
-            a_rd.plot([legend_x0], [y_], marker="s", markersize=5,
-                      color=CAT_COLOR[cat], transform=a_rd.transAxes,
-                      zorder=21, clip_on=False)
-        # State readout
-        readout = (f"$s_{{ego}}={s_ego[idx]:.1f}$ m\n"
-                   f"$v_{{ego}}={v_ego[idx]:.2f}$ m/s\n"
-                   f"$s_{{onc1}}={s_onc[idx]:.1f}$ m\n"
-                   f"wait={int(wait_safe[idx])}, go={int(go_safe[idx])}")
+        readout = [
+            f"t = {times[idx]:.1f} s",
+            slab,
+            f"s_ego = {s_ego[idx]:.1f} m",
+            f"v_ego = {v_ego[idx]:.2f} m/s",
+            f"s_1 = {s_onc[idx]:.1f} m",
+        ]
         if has_vehicle_2:
-            readout += f"\n$s_{{onc2}}={s_onc_2[idx]:.1f}$ m"
-        a_rd.text(0.98, 0.98, readout,
-                  transform=a_rd.transAxes, fontsize=8, va="top", ha="right",
-                  family="monospace", color=C["txt"],
-                  bbox=dict(boxstyle="round,pad=0.3", fc="white",
-                            alpha=0.85, ec=C["guide"]), zorder=20)
+            readout.append(f"s_2 = {s_onc_2[idx]:.1f} m")
+        readout += [
+            f"wait/go = {int(wait_safe[idx])}/{int(go_safe[idx])}",
+            f"ctrl = {ctrl_ms[idx]:.2f} ms",
+            f"synth = {synth_ms[idx]:.2f} ms",
+        ]
+        a_rd.text(0.985, 0.975, "\n".join(readout),
+                  transform=a_rd.transAxes, fontsize=11.5, va="top", ha="right",
+                  family="monospace", linespacing=1.25,
+                  color=C["txt"], zorder=20,
+                  bbox=dict(boxstyle="round,pad=0.45", fc="white",
+                            ec=scol, alpha=0.96, lw=1.5))
+
+        legend_handles = [
+            Patch(facecolor=C["safe"], alpha=0.65, label="Certified safe slice"),
+            Line2D([0], [0], color=C["unsafe"], lw=3.0, alpha=0.8, label="Unsafe slice"),
+            Patch(facecolor=C["ctrl"], label="Ego vehicle"),
+            Patch(facecolor=C["onc"], label="Oncoming 1"),
+        ]
+        if has_vehicle_2:
+            legend_handles.append(Patch(facecolor=C["onc2"], label="Oncoming 2"))
+        leg = a_rd.legend(handles=legend_handles, loc="lower right",
+                          fontsize=10.5, title="Scene Legend",
+                          title_fontsize=11.5, frameon=True,
+                          framealpha=0.94, borderpad=0.8)
+        leg.get_frame().set_edgecolor(C["guide"])
 
         # ══ RIGHT 2×2: TIME-SERIES PANELS ═════════════════════════
         sl = slice(0, idx + 1)
@@ -1071,13 +1074,13 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
         a_vv.set_xlim(TL); a_vv.set_ylim(VVL)
         onc1_vlabel = "$v_1$" if has_vehicle_2 else "$v_{onc}$"
         a_vv.plot(times[sl], v_onc[sl], "-o", c=C["onc"],
-                  lw=2.0, ms=3.0, label=onc1_vlabel, zorder=5)
+                  lw=2.4, ms=4.0, label=onc1_vlabel, zorder=5)
         if has_vehicle_2:
             a_vv.plot(times[sl], v_onc_2[sl], "-^", c=C["onc2"],
-                      lw=2.0, ms=3.0, label="$v_2$", zorder=5)
+                      lw=2.4, ms=4.0, label="$v_2$", zorder=5)
         a_vv.plot(times[sl], v_ego[sl], "--s", c=C["vego"],
-                  lw=2.0, ms=3.0, label="$v_{ego}$", zorder=5)
-        a_vv.legend(fontsize=8, loc="lower right", framealpha=0.85)
+                  lw=2.4, ms=4.0, label="$v_{ego}$", zorder=5)
+        a_vv.legend(fontsize=10.5, loc="lower right", framealpha=0.9)
         _style(a_vv, "Velocity (m/s)", "Vehicle Velocities")
         _spans(a_vv, idx)
 
@@ -1086,8 +1089,8 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
         a_ct.set_xlim(TL); a_ct.set_ylim(CL)
         a_ct.axhline(0, c=C["guide"], lw=0.8, zorder=0)
         a_ct.step(times[sl], u_ctrl[sl], where="post",
-                  c=C["ctrl"], lw=2.0, zorder=5)
-        a_ct.plot(times[idx], u_ctrl[idx], "o", c=C["ctrl"], ms=5, zorder=6)
+                  c=C["ctrl"], lw=2.5, zorder=5)
+        a_ct.plot(times[idx], u_ctrl[idx], "o", c=C["ctrl"], ms=6, zorder=6)
         _style(a_ct, "$u$ (N)", "Control Input")
         _spans(a_ct, idx)
 
@@ -1097,8 +1100,8 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
         a_bs.fill_between(times[sl], 0, safe_pct[sl],
                           color=C["safe"], alpha=0.12, step="post")
         a_bs.step(times[sl], safe_pct[sl], where="post",
-                  c=C["safe"], lw=2.0, zorder=5)
-        a_bs.plot(times[idx], safe_pct[idx], "o", c=C["safe"], ms=5, zorder=6)
+                  c=C["safe"], lw=2.5, zorder=5)
+        a_bs.plot(times[idx], safe_pct[idx], "o", c=C["safe"], ms=6, zorder=6)
         _style(a_bs, "Safe (%)", "Safe Fraction of State Space", xlabel="Time (s)")
         _spans(a_bs, idx)
 
@@ -1119,14 +1122,14 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
                      color=C["synth"], alpha=0.85, label="Synthesis", zorder=5)
         a_tm.axhline(ctrl_ms.mean(), c=C["ctrl"], lw=1.0, ls="--",
                      alpha=0.6, zorder=4)
-        a_tm.legend(fontsize=7, loc="upper right", framealpha=0.85)
+        a_tm.legend(fontsize=10, loc="upper right", framealpha=0.9)
         _style(a_tm, "Time (ms)", "Computation Time", xlabel="Time (s)")
         _spans(a_tm, idx)
 
-        title_str = ("MonoSafe  ·  Two Oncoming Vehicles  (dt = 0.1 s)"
+        title_str = ("Two-Oncoming Left-Turn Real-Time Control  (dt = 0.1 s)"
                      if has_vehicle_2
-                     else "MonoSafe  ·  Left-Turn Intersection  (dt = 0.1 s)")
-        fig.suptitle(title_str, fontsize=13, fontweight="bold",
+                     else "Left-Turn Real-Time Control  (dt = 0.1 s)")
+        fig.suptitle(title_str, fontsize=17, fontweight="bold",
                      color=C["txt"], y=0.97)
         return []
 
@@ -1135,7 +1138,11 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
     if fig_dir:
         mp4_path = os.path.join(fig_dir, "intersection.mp4")
         try:
-            writer = FFMpegWriter(fps=10, metadata={"title": "MonoSafe Sim"})
+            writer = FFMpegWriter(
+                fps=12,
+                metadata={"title": "Real-Time Left Turn"},
+                bitrate=12000,
+            )
             anim.save(mp4_path, writer=writer, dpi=dpi)
             print(f"[animate] Saved: {mp4_path}")
         except Exception as e:
@@ -1145,6 +1152,11 @@ def animate_intersection(df: pd.DataFrame, x_cols: list[str],
                 print(f"[animate] Saved: {gif_path} (ffmpeg unavailable)")
             except Exception as e2:
                 print(f"[animate] Could not save animation: {e2}")
+        last_frame_path = os.path.join(fig_dir, "intersection_last_frame.png")
+        _draw(N - 1)
+        fig.savefig(last_frame_path, dpi=dpi, bbox_inches="tight",
+                    facecolor=fig.get_facecolor())
+        print(f"[animate] Saved: {last_frame_path}")
     else:
         plt.show()
 
@@ -1196,6 +1208,17 @@ def main() -> None:
             plt.style.use(args.style)
     except OSError:
         plt.style.use("ggplot")  # Fallback
+    plt.rcParams.update({
+        "figure.dpi": args.dpi,
+        "savefig.dpi": args.dpi,
+        "font.size": 12,
+        "axes.titlesize": 15,
+        "axes.labelsize": 13,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
+        "legend.fontsize": 11,
+        "lines.linewidth": 2.2,
+    })
 
     # Load data
     print(f"Loading: {args.log}")

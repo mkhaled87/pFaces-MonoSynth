@@ -87,6 +87,7 @@ struct SimConfig {
     int    ode_steps      = 1000;     ///< RK4 sub-steps per dt
     double resynth_thresh = 0.5;      ///< Resynthesize if |Δparam| > threshold
     std::string resynth_policy = "threshold"; ///< "always", "never", or "threshold"
+    int    max_syntheses_per_step = 1; ///< Dual mode: hard cap on online syntheses per tick
     std::string log_file  = "sim_log.csv";
 
     // Verbosity
@@ -142,7 +143,8 @@ public:
         double last_param_val   = std::numeric_limits<double>::quiet_NaN();
         double last_param_val_2 = std::numeric_limits<double>::quiet_NaN();
         int step = 0;
-        const int total_steps = static_cast<int>(sim_cfg.total_time / sim_cfg.dt);
+        int dual_tiebreak = 0;
+        const int total_steps = static_cast<int>(sim_cfg.total_time / sim_cfg.dt) + 1;
 
         const bool has_param = (sensor_ != nullptr);
         const bool has_dual = dual_.has_value();
@@ -150,9 +152,14 @@ public:
         const auto snames = dyn_->state_names();
         const auto inames = dyn_->input_names();
 
+        if (sim_cfg.resynth_policy != "always") {
+            if (has_param) last_param_val = sensor_->sense(0.0);
+            if (has_dual && dual_->sensor_2) last_param_val_2 = dual_->sensor_2->sense(0.0);
+        }
+
         if (sim_cfg.verbose) {
             std::cout << "╔══════════════════════════════════════════════════╗\n"
-                      << "║  MonoSafe Real-Time Controller Simulation       ║\n"
+                      << "║  Real-Time Controller Simulation               ║\n"
                       << "╠══════════════════════════════════════════════════╣\n"
                       << "║  Scenario:   " << dyn_->name()
                       << std::string(std::max(1, 34 - (int)dyn_->name().size()), ' ') << "║\n"
@@ -228,6 +235,37 @@ public:
 
                 bool resynth_wait = needs_resynth(param_val, last_param_val);
                 bool resynth_go   = needs_resynth(param_val_2, last_param_val_2);
+                const double wait_delta = std::isnan(last_param_val)
+                    ? std::numeric_limits<double>::infinity()
+                    : std::fabs(param_val - last_param_val);
+                const double go_delta = std::isnan(last_param_val_2)
+                    ? std::numeric_limits<double>::infinity()
+                    : std::fabs(param_val_2 - last_param_val_2);
+                bool deferred_wait = false;
+                bool deferred_go = false;
+
+                int need_count = (resynth_wait ? 1 : 0)
+                               + (resynth_go ? 1 : 0);
+                if (sim_cfg.max_syntheses_per_step == 1 && need_count > 1) {
+                    int choice = -1;
+                    double best_delta = -1.0;
+                    auto consider = [&](int idx, bool needed, double delta) {
+                        if (!needed) return;
+                        if (delta > best_delta + 1e-12) {
+                            best_delta = delta;
+                            choice = idx;
+                        } else if (std::fabs(delta - best_delta) <= 1e-12
+                                   && (dual_tiebreak++ % 2 == 0)) {
+                            choice = idx;
+                        }
+                    };
+                    consider(0, resynth_wait, wait_delta);
+                    consider(1, resynth_go, go_delta);
+                    deferred_wait = resynth_wait && choice != 0;
+                    deferred_go = resynth_go && choice != 1;
+                    resynth_wait = (choice == 0);
+                    resynth_go = (choice == 1);
+                }
                 double total_synth_ms = 0.0;
                 double wait_ms = 0.0, go_ms = 0.0;
 
@@ -254,13 +292,19 @@ public:
                         if (resynth_wait) std::cout << " wait";
                         if (resynth_go) std::cout << " go";
                         std::cout << ")\n";
+                        if (deferred_wait || deferred_go) {
+                            std::cout << "        deferred:";
+                            if (deferred_wait) std::cout << " wait";
+                            if (deferred_go) std::cout << " go";
+                            std::cout << "  (max one synthesis per control tick)\n";
+                        }
                         auto print_detail = [](const std::string& label,
                                                const SynthesisDetail& d) {
                             std::cout << "        " << label
                                       << ": GPU=" << std::setprecision(1) << d.gpu_exec_ms << " ms"
                                       << " (pre=" << std::setprecision(1) << d.precompute_ms
                                       << " gfp=" << std::setprecision(1)
-                                      << (d.gfp_ms - d.precompute_ms) << ")"
+                                      << d.gfp_ms << ")"
                                       << "  iters=" << d.iterations
                                       << "  basis=" << d.basis_size
                                       << "  safe=" << d.safe_cells << "/" << d.total_cells
@@ -443,12 +487,19 @@ private:
         int safe_count = 0, total = static_cast<int>(log.size());
         double total_ctrl_ms = 0.0, max_ctrl_ms = 0.0;
         double total_query_ns = 0.0;
+        double total_synth_ms = 0.0, max_synth_ms = 0.0;
+        int synth_steps = 0;
 
         for (const auto& e : log) {
             if (e.is_safe) ++safe_count;
             total_ctrl_ms += e.ctrl_ms;
             max_ctrl_ms = std::max(max_ctrl_ms, e.ctrl_ms);
             total_query_ns += e.query_ns;
+            if (e.synth_ms > 0.0) {
+                ++synth_steps;
+                total_synth_ms += e.synth_ms;
+                max_synth_ms = std::max(max_synth_ms, e.synth_ms);
+            }
         }
 
         std::cout << "\n╔══════════════════════════════════════════════════╗\n"
@@ -463,6 +514,10 @@ private:
                   << "║  Avg ctrl time:   " << std::setprecision(2)
                   << (total_ctrl_ms / std::max(1, total)) << " ms\n"
                   << "║  Max ctrl time:   " << max_ctrl_ms << " ms\n"
+                  << "║  Synth steps:     " << synth_steps << "/" << total << "\n"
+                  << "║  Avg synth time:  " << std::setprecision(2)
+                  << (total_synth_ms / std::max(1, synth_steps)) << " ms\n"
+                  << "║  Max synth time:  " << max_synth_ms << " ms\n"
                   << "║  Avg query time:  " << std::setprecision(0)
                   << (total_query_ns / std::max(1, total)) << " ns\n"
                   << "║  Final basis:     " << (log.empty() ? 0 : log.back().basis_size) << "\n"

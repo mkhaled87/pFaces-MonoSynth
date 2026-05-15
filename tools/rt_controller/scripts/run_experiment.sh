@@ -20,7 +20,16 @@
 # ───────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-CFG="${1:?Usage: $0 <config.json> [--no-animate]}"
+CFG_INPUT="${1:?Usage: $0 <config.json> [--no-animate]}"
+if [[ "$CFG_INPUT" = /* ]]; then
+    CFG="$CFG_INPUT"
+else
+    CFG="$(python3 - "$CFG_INPUT" <<'PY'
+import os, sys
+print(os.path.abspath(sys.argv[1]))
+PY
+)"
+fi
 ANIMATE=true
 [[ "${2:-}" == "--no-animate" ]] && ANIMATE=false
 

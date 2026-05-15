@@ -108,6 +108,7 @@ int main(int argc, char** argv) {
         json J = json::parse(jf);
 
         bool verbose = jget<bool>(J, "verbose", true);
+        json jsim = J.value("simulation", json::object());
 
         // =============================================================
         // 1. Parse the .cfg for grid / dynamics definitions
@@ -202,6 +203,14 @@ int main(int argc, char** argv) {
                 dp.has_runtime_param = has_runtime_param;
                 synth = std::make_unique<DirectSynthesis>(dp);
             }
+            else if (synth_mode == "fast_tt") {
+                FastTTInlineSynthesis::Params fp;
+                fp.cfg_path          = cfg_path;
+                fp.kernel_pack       = kernel_pack;
+                fp.device_id         = device_id;
+                fp.has_runtime_param = has_runtime_param;
+                synth = std::make_unique<FastTTInlineSynthesis>(fp);
+            }
 #endif
             else {
                 throw std::runtime_error("Unknown synthesis mode: " + synth_mode);
@@ -279,6 +288,14 @@ int main(int argc, char** argv) {
                     dp.device_id         = dev;
                     dp.has_runtime_param = true;
                     return std::make_shared<DirectSynthesis>(dp);
+                }
+                if (mode == "fast_tt") {
+                    FastTTInlineSynthesis::Params fp;
+                    fp.cfg_path          = sub_cfg_path;
+                    fp.kernel_pack       = kp;
+                    fp.device_id         = dev;
+                    fp.has_runtime_param = true;
+                    return std::make_shared<FastTTInlineSynthesis>(fp);
                 }
 #endif
                 throw std::runtime_error("Unknown synthesis mode: " + mode);
@@ -416,8 +433,9 @@ int main(int argc, char** argv) {
         ControllerConfig ctrl_cfg;
         ctrl_cfg.prediction_horizon = jget<int>(jc, "prediction_horizon", 10);
         ctrl_cfg.control_horizon    = jget<int>(jc, "control_horizon", 5);
-        ctrl_cfg.sampling_time      = jget<double>(jc, "sampling_time", cfg.sampling_period);
-        ctrl_cfg.ode_substeps       = jget<int>(jc, "ode_substeps", 100);
+        ctrl_cfg.sampling_time      = jget<double>(jc, "sampling_time",
+                                        jget<double>(jsim, "sampling_period", cfg.sampling_period));
+        ctrl_cfg.ode_substeps       = jget<int>(jc, "ode_substeps", cfg.ode_steps);
         ctrl_cfg.mppi_rollouts      = jget<int>(jc, "mppi_rollouts", 512);
         ctrl_cfg.mppi_iterations    = jget<int>(jc, "mppi_iterations", 100);
         ctrl_cfg.mppi_sigma         = jget<double>(jc, "mppi_sigma", 300.0);
@@ -437,8 +455,6 @@ int main(int argc, char** argv) {
         // =============================================================
         // 9. Simulation config
         // =============================================================
-        json jsim = J.value("simulation", json::object());
-
         SimConfig sim_cfg;
         if (jsim.contains("x0")) {
             auto x0_vec = jsim["x0"].get<std::vector<double>>();
@@ -452,11 +468,11 @@ int main(int argc, char** argv) {
 
         sim_cfg.total_time     = jget<double>(jsim, "duration", 20.0);
         sim_cfg.dt             = jget<double>(jsim, "sampling_period", cfg.sampling_period);
-        ctrl_cfg.sampling_time = sim_cfg.dt;
         sim_cfg.ode_steps      = cfg.ode_steps;
         sim_cfg.resynth_thresh = jget<double>(jsim, "resynth_threshold", 0.5);
         sim_cfg.resynth_policy = jget<std::string>(jsim, "resynth_policy",
                                     has_runtime_param ? "threshold" : "never");
+        sim_cfg.max_syntheses_per_step = jget<int>(jsim, "max_syntheses_per_step", 1);
         sim_cfg.log_file       = (fs::path(output_dir) / "sim_log.csv").string();
         sim_cfg.verbose        = verbose;
 

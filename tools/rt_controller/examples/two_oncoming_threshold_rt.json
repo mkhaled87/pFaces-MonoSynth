@@ -1,0 +1,48 @@
+{
+    "cfg_file": "../../examples/two_oncoming/two_oncoming_threshold_rt.cfg",
+    "dynamics_class": "two_oncoming",
+
+    "synthesis_go": {
+        "cfg_file": "../../examples/turn_ego_first/turn_ego_first_threshold_rt.cfg",
+        "mode": "fast_tt",
+        "kernel_pack": "../../kernel-pack",
+        "device_id": 0
+    },
+    "synthesis_wait": {
+        "cfg_file": "../../examples/turn_oncoming_first/turn_oncoming_first_threshold_rt.cfg",
+        "mode": "fast_tt",
+        "kernel_pack": "../../kernel-pack",
+        "device_id": 0
+    },
+
+    "controller": {
+        "prediction_horizon": 20,
+        "control_horizon": 20,
+        "ode_substeps": 200,
+        "mppi_rollouts": 512,
+        "mppi_sigma": 1000.0,
+        "mppi_iterations": 10,
+        "cost": {
+            "w_progress": 1.0,
+            "w_safety": 10000.0,
+            "w_terminal_v": 1.0,
+            "w_jerk": 0.01,
+            "goal": 10.0,
+            "unsafe_goal": -10.0
+        }
+    },
+
+    "simulation": {
+        "x0": [-25.0, 5.0, -15.0, -50.0],
+        "duration": 9.0,
+        "sampling_period": 0.1,
+        "resynth_policy": "threshold",
+        "resynth_threshold": 0.2,
+        "max_syntheses_per_step": 1
+    },
+
+    "sensor":   { "type": "sine", "value": 10.0, "amplitude": -3.0, "frequency": 0.05 },
+    "sensor_2": { "type": "sine", "value": 4.0, "amplitude": 4.0, "frequency": 0.04 },
+
+    "verbose": true
+}

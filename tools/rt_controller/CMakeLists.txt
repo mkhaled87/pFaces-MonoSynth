@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(rt_controller
     VERSION 1.0.0
-    DESCRIPTION "MonoSafe Real-Time Safe Controller Framework"
+    DESCRIPTION "Real-time safe-controller experiments for pFaces-MonoSynth"
     LANGUAGES CXX
 )
 
@@ -47,6 +47,10 @@ FetchContent_MakeAvailable(eigen)
 # Conda NLopt packages ship broken transitive paths in their CMake config.
 set(_NLOPT_PREFIX_HINTS
     "$ENV{CONDA_PREFIX}"
+    "$ENV{HOME}/miniconda3"
+    "$ENV{HOME}/anaconda3"
+    "$ENV{HOME}/mambaforge"
+    /opt/conda
     /usr
     /usr/local
     /opt/homebrew
