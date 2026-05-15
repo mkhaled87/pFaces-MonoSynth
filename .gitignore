@@ -32,8 +32,8 @@ tools/rt_controller/experiments/
 tools/benchmark_results/
 *.csv
 *.bin
-*.mp4
-*.gif
+# *.mp4
+# *.gif
 *.pdf
 
 # LaTeX build artifacts

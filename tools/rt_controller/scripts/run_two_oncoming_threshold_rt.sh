@@ -77,11 +77,14 @@ if [[ "$CONFIG" != /* ]]; then
     CONFIG="$(cd "$REPO_DIR" && python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$CONFIG")"
 fi
 
+if [[ -z "${PFACES_SDK_ROOT:-}" && -d /opt/pfaces/pfaces-sdk ]]; then
+    export PFACES_SDK_ROOT=/opt/pfaces/pfaces-sdk
+fi
 if [[ -z "${PFACES_SDK_ROOT:-}" && -d /home/yasin/pFaces/pfaces-sdk ]]; then
     export PFACES_SDK_ROOT=/home/yasin/pFaces/pfaces-sdk
 fi
 if [[ -z "${PFACES_SDK_ROOT:-}" ]]; then
-    echo "ERROR: PFACES_SDK_ROOT is not set." >&2
+    echo "ERROR: PFACES_SDK_ROOT is not set (expected /opt/pfaces/pfaces-sdk in Docker)." >&2
     exit 1
 fi
 

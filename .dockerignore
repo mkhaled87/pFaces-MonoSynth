@@ -1,0 +1,17 @@
+.git
+.vscode
+build
+tools/rt_controller/build*
+tools/rt_controller/experiments
+*.pdf
+*.aux
+*.out
+*.log
+*.fdb_latexmk
+*.fls
+*.nav
+*.snm
+*.synctex.gz
+*.toc
+*.csv
+figures
