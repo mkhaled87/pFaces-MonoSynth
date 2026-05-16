@@ -66,19 +66,59 @@ sh build.sh
 pfaces -G -l
 ```
 
+## Unified End-To-End Runner
+
+Run the complete pipeline (ACC basis video, ACC threshold video, and RT controller video) using one command:
+
+```bash
+./scripts/run_e2e.sh
+```
+
+Routing behavior:
+- `macOS arm64` -> native run (downloads `pFaces-1.4-MacOS26-ARM64.4zip` into local cache).
+- `Linux amd64` -> Docker run.
+- Other host combinations fail fast with guidance.
+
+You can still force Docker on macOS with `--mode docker`, but Docker runs Linux containers, so it uses the Linux pFaces asset (not the macOS `.4zip` asset). On Docker Desktop for macOS, GPU OpenCL passthrough is typically unavailable. In that case, ACC videos can run on CPU (`MONOSAFE_ACC_ONLY=1`) with a CL1.2 OpenCL override, while the RT controller stage remains GPU-only.
+
+Optional flags:
+
+```bash
+./scripts/run_e2e.sh --mode auto
+./scripts/run_e2e.sh --mode native
+./scripts/run_e2e.sh --mode docker --output /path/to/output_dir
+```
+
+CPU ACC-only Docker run (no RT stage):
+
+```bash
+MONOSAFE_ACC_ONLY=1 PFACES_DEVICE_CLASS=C ./scripts/run_e2e.sh --mode docker
+```
+
 ## Synthesis And Visualization
 
 Run standalone threshold synthesis and render the safe-set evolution:
 
 ```bash
-./run_threshold_synthesis.sh --cfg examples/acc/acc.cfg --mode threshold --device 1
+./run_threshold_synthesis.sh --cfg examples/acc/acc.cfg --mode threshold --device-class G --device 1
 ```
 
 The script runs pFaces, records `threshold_evolution.csv`, and writes
 `examples/acc/threshold_evolution.mp4`. It also supports basis-mode rendering:
 
 ```bash
-./run_threshold_synthesis.sh --cfg examples/acc/acc.cfg --mode basis --device 1
+./run_threshold_synthesis.sh --cfg examples/acc/acc.cfg --mode basis --device-class G --device 1
+```
+
+CPU execution is also supported for ACC synthesis:
+
+```bash
+./run_threshold_synthesis.sh \
+    --cfg examples/acc/acc.cfg \
+    --mode threshold \
+    --device-class C \
+    --device 1 \
+    --opencl-opts "-cl-std=CL1.2"
 ```
 
 For pure synthesis timing with no CSV/video output and no basis extraction:

@@ -1,4 +1,8 @@
-FROM ubuntu:22.04
+FROM ubuntu:24.04
+
+ARG TARGETOS
+ARG TARGETARCH
+ARG PFACES_RELEASE_TAG=Release_1.4.0d
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
@@ -31,13 +35,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /workspace
 
 COPY docker/requirements.txt /tmp/requirements.txt
-RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
+RUN python3 -m pip install --break-system-packages --no-cache-dir -r /tmp/requirements.txt
 
 RUN mkdir -p /opt/pfaces && \
     cd /opt/pfaces && \
-    wget -q https://github.com/parallall/pFaces/releases/download/Release_1.3.0d/pFaces-1.3.0-Ubuntu22.04.zip && \
-    unzip -q pFaces-1.3.0-Ubuntu22.04.zip && \
-    rm -f pFaces-1.3.0-Ubuntu22.04.zip && \
+    case "${TARGETOS:-linux}/${TARGETARCH:-amd64}" in \
+        linux/amd64) pf_asset="pFaces-1.4-Ubuntu24.04.zip" ;; \
+        *) \
+            echo "ERROR: Unsupported Docker target ${TARGETOS:-unknown}/${TARGETARCH:-unknown} for pFaces 1.4." >&2; \
+            echo "Use --platform linux/amd64 (for example on Apple Silicon)." >&2; \
+            exit 1 ;; \
+    esac && \
+    wget -q "https://github.com/parallall/pFaces/releases/download/${PFACES_RELEASE_TAG}/${pf_asset}" && \
+    unzip -q "${pf_asset}" && \
+    rm -f "${pf_asset}" && \
     ln -sf /opt/pfaces/bin/pfaces /usr/local/bin/pfaces
 
 RUN mkdir -p /etc/OpenCL/vendors && \

@@ -1,0 +1,13 @@
+precompute_transitions {
+    next_state_table {
+        MemConfig = "pfaces_rw_global";
+        directionWriteOrRead = "true";
+        HostDoWrite = "true";
+        HostDoRead = "true";
+        baseTypeSize = "4";
+    }
+    runtime_params {
+        MemConfig = "pfaces_rw_global";
+        HostDoWrite = "true";
+    }
+}

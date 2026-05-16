@@ -1,0 +1,23 @@
+bitmap_gfp_advance {
+    bitmap_in {
+        MemConfig = "pfaces_rw_global";
+        isNewOrResident = "false";
+        residentFuncIdx = "4";
+        residentFuncArgIdx = "1";
+        baseTypeSize = "4";
+    }
+    bitmap_out {
+        MemConfig = "pfaces_rw_global";
+        isNewOrResident = "false";
+        residentFuncIdx = "4";
+        residentFuncArgIdx = "2";
+        baseTypeSize = "4";
+    }
+    changed_flag {
+        MemConfig = "pfaces_rw_global";
+        isNewOrResident = "false";
+        residentFuncIdx = "4";
+        residentFuncArgIdx = "3";
+        baseTypeSize = "4";
+    }
+}

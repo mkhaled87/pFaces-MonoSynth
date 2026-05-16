@@ -93,7 +93,7 @@ case "$DEVICE_CLASS" in
 esac
 
 if [[ "$DEVICE_CLASS" == "C" && -z "$OPENCL_OPTS" ]]; then
-    # pFaces Linux build defaults to CL2.0, but common CPU ICDs expose CL1.2.
+    # pFaces Linux build defaults to CL2.0, but typical CPU ICDs expose CL1.2.
     OPENCL_OPTS="-cl-std=CL1.2"
 fi
 
