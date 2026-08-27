@@ -3,6 +3,7 @@
 const char* synthesisMethodName(SynthesisMethod method) {
 	switch (method) {
 	case SynthesisMethod::CDC: return "cdc";
+	case SynthesisMethod::CDC_THRESHOLD: return "cdc_threshold";
 	case SynthesisMethod::AUTOMATICA_SCAN: return "automatica_scan";
 	case SynthesisMethod::AUTOMATICA_THRESHOLD: return "automatica_threshold";
 	case SynthesisMethod::THRESHOLD: return "threshold";
@@ -10,6 +11,10 @@ const char* synthesisMethodName(SynthesisMethod method) {
 	case SynthesisMethod::THRESHOLD_CPU_REFERENCE: return "threshold_cpu_reference";
 	}
 	return "invalid";
+}
+
+const char* cdcThresholdBackendName(CdcThresholdBackend backend) {
+	return backend == CdcThresholdBackend::GPU ? "gpu" : "host";
 }
 
 const char* transitionBackendName(TransitionBackend backend) {
@@ -850,7 +855,8 @@ defaultConfiguration::defaultConfiguration()
 	m_schema[819] = "use_prefix_sweep = string";
 	m_schema[820] = "boundary_seeding = string";
 	m_schema[821] = "boundary_semantics = string";
-	m_schema[822] = 0;
+	m_schema[822] = "cdc_threshold_backend = string";
+	m_schema[823] = 0;
 
 
 	std::stringstream m_str;
@@ -913,6 +919,7 @@ defaultConfiguration::defaultConfiguration()
 	m_str << "synthesis_method = \"threshold\";\n";
 	m_str << "transition_semantics = \"extremal_single_successor\";\n";
 	m_str << "transition_backend = \"precomputed\";\n";
+	m_str << "cdc_threshold_backend = \"host\";\n";
 	m_str << "boundary_semantics = \"strict_unsafe\";\n";
 	m_str << "threshold_d_star = \"-1\";\n";
 	m_str << "extract_basis = \"true\";\n";
@@ -1517,7 +1524,7 @@ const char* defaultConfiguration::getDefaults() {
 }
 void defaultConfiguration::getSchema(const char**& schema, int& schemaSize) {
 	schema = s_singleton.m_schema;
-	schemaSize = 822;
+	schemaSize = 823;
 }
 const char** defaultConfiguration::getSchema(){
 	return s_singleton.m_schema;
@@ -1623,14 +1630,27 @@ void configReader::load_values() {
 		try { method = m_spConfigObject->readConfigValueString("synthesis_method"); }
 		catch (...) {}
 		if (method == "cdc") m_synthesis_method = SynthesisMethod::CDC;
+		else if (method == "cdc_threshold") m_synthesis_method = SynthesisMethod::CDC_THRESHOLD;
 		else if (method == "automatica_scan") m_synthesis_method = SynthesisMethod::AUTOMATICA_SCAN;
 		else if (method == "automatica_threshold") m_synthesis_method = SynthesisMethod::AUTOMATICA_THRESHOLD;
 		else if (method == "threshold") m_synthesis_method = SynthesisMethod::THRESHOLD;
 		else if (method == "bitmap_reference") m_synthesis_method = SynthesisMethod::BITMAP_REFERENCE;
 		else if (method == "threshold_cpu_reference") m_synthesis_method = SynthesisMethod::THRESHOLD_CPU_REFERENCE;
 		else throw pfacesConfigurationException(
-			"synthesis_method must be cdc, automatica_scan, automatica_threshold, "
+			"synthesis_method must be cdc, cdc_threshold, automatica_scan, automatica_threshold, "
 			"threshold, bitmap_reference, or threshold_cpu_reference");
+
+		std::string cdc_threshold_backend = "host";
+		try {
+			cdc_threshold_backend =
+				m_spConfigObject->readConfigValueString("cdc_threshold_backend");
+		} catch (...) {}
+		if (cdc_threshold_backend == "host")
+			m_cdc_threshold_backend = CdcThresholdBackend::HOST;
+		else if (cdc_threshold_backend == "gpu")
+			m_cdc_threshold_backend = CdcThresholdBackend::GPU;
+		else throw pfacesConfigurationException(
+			"cdc_threshold_backend must be host or gpu");
 
 		try {
 			m_transition_semantics = m_spConfigObject->readConfigValueString("transition_semantics");
@@ -1845,6 +1865,11 @@ int configReader::validate_values() {
 		m_synthesis_method == SynthesisMethod::BITMAP_REFERENCE;
 	if (m_transition_backend == TransitionBackend::INLINE && !supports_inline) {
 		sserrors << "\t-transition_backend=inline is allowed only for threshold and bitmap_reference." << std::endl;
+		ret = VALIDATE_RESULT_FAILED;
+	}
+	if (m_synthesis_method == SynthesisMethod::CDC_THRESHOLD &&
+	    m_transition_backend != TransitionBackend::PRECOMPUTED) {
+		sserrors << "\t-synthesis_method=cdc_threshold requires transition_backend=precomputed." << std::endl;
 		ret = VALIDATE_RESULT_FAILED;
 	}
 

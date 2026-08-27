@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validated configurable solver benchmark for MonoSynth.
+"""Validated configurable five-method and reference benchmark for MonoSynth.
 
 Every case uses one generated configuration, one 64-bit successor cache, one
 deterministic threshold axis, and precomputed transitions.  A result row is
@@ -36,28 +36,50 @@ except ImportError:  # Small-case standard-library fallback remains available.
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_PACK = ROOT / "kernel-pack"
 PRODUCTION_METHODS = (
-    "cdc", "automatica_scan", "automatica_threshold", "threshold"
+    "cdc", "cdc_threshold", "automatica_scan", "automatica_threshold",
+    "threshold",
 )
 REFERENCE_METHODS = ("bitmap_reference", "threshold_cpu_reference")
 ALL_METHODS = PRODUCTION_METHODS + REFERENCE_METHODS
+DEFAULT_RUN_METHODS = (
+    "cdc", "cdc_threshold_host", "cdc_threshold_gpu",
+    "automatica_scan", "automatica_threshold", "threshold",
+)
 CLI_METHODS = {
-    "cdc": "cdc",
-    "automatica-scan": "automatica_scan",
-    "automatica_scan": "automatica_scan",
-    "automatica-threshold": "automatica_threshold",
-    "automatica_threshold": "automatica_threshold",
-    "threshold": "threshold",
-    "bitmap-reference": "bitmap_reference",
-    "bitmap_reference": "bitmap_reference",
-    "threshold-cpu-reference": "threshold_cpu_reference",
-    "threshold_cpu_reference": "threshold_cpu_reference",
+    "cdc": ("cdc",),
+    "cdc-threshold": ("cdc_threshold_host", "cdc_threshold_gpu"),
+    "cdc_threshold": ("cdc_threshold_host", "cdc_threshold_gpu"),
+    "cdc-threshold-host": ("cdc_threshold_host",),
+    "cdc_threshold_host": ("cdc_threshold_host",),
+    "cdc-threshold-gpu": ("cdc_threshold_gpu",),
+    "cdc_threshold_gpu": ("cdc_threshold_gpu",),
+    "automatica-scan": ("automatica_scan",),
+    "automatica_scan": ("automatica_scan",),
+    "automatica-threshold": ("automatica_threshold",),
+    "automatica_threshold": ("automatica_threshold",),
+    "threshold": ("threshold",),
+    "bitmap-reference": ("bitmap_reference",),
+    "bitmap_reference": ("bitmap_reference",),
+    "threshold-cpu-reference": ("threshold_cpu_reference",),
+    "threshold_cpu_reference": ("threshold_cpu_reference",),
 }
+
+
+def logical_method(run_method: str) -> str:
+    return "cdc_threshold" if run_method.startswith("cdc_threshold_") else run_method
+
+
+def method_backend(run_method: str) -> str:
+    if run_method == "cdc_threshold_gpu":
+        return "gpu"
+    return "host"
 
 
 @dataclass
 class Measurement:
     case: str
     method: str
+    cdc_threshold_backend: str
     repetition: int
     status: str
     returncode: int
@@ -68,19 +90,23 @@ class Measurement:
     allocated_bytes: int = 0
     safe_cells: int = 0
     cdc_epochs: int = 0
+    cdc_passes: int = 0
     cdc_mutations: int = 0
     gfp_rounds: int = 0
     frontier_batches: int = 0
     membership_queries: int = 0
+    speculative_membership_queries: int = 0
     binary_search_probes: int = 0
     transition_ms: float = 0.0
     membership_ms: float = 0.0
     representation_ms: float = 0.0
+    threshold_maintenance_ms: float = 0.0
     basis_update_ms: float = 0.0
     solver_ms: float = 0.0
     log: str = ""
     output: str = ""
     error: str = ""
+    cdc_pass_hashes: str = ""
 
 
 def parse_methods(text: str) -> List[str]:
@@ -89,9 +115,9 @@ def parse_methods(text: str) -> List[str]:
         key = item.strip().lower()
         if key not in CLI_METHODS:
             raise argparse.ArgumentTypeError(f"unknown method: {item}")
-        method = CLI_METHODS[key]
-        if method not in requested:
-            requested.append(method)
+        for method in CLI_METHODS[key]:
+            if method not in requested:
+                requested.append(method)
     if not requested:
         raise argparse.ArgumentTypeError("at least one method is required")
     return requested
@@ -119,6 +145,7 @@ def apply_experiment_config(args: argparse.Namespace,
         "version", "name", "configs", "methods", "state_eta", "warmup_runs",
         "measured_runs", "device", "timeout_seconds", "verbose", "output",
         "pfaces", "allow_nonmonotone_diagnostic", "config_overrides",
+        "hidden_methods", "allow_timeouts",
     }
     unknown = sorted(set(spec) - allowed)
     if unknown:
@@ -135,6 +162,26 @@ def apply_experiment_config(args: argparse.Namespace,
         parser.error("experiment config 'methods' must be a nonempty string list")
     try:
         args.methods = parse_methods(",".join(methods))
+    except argparse.ArgumentTypeError as error:
+        parser.error(str(error))
+    hidden_methods = spec.get("hidden_methods", [])
+    if not isinstance(hidden_methods, list) or not all(
+            isinstance(item, str) for item in hidden_methods):
+        parser.error("experiment config 'hidden_methods' must be a string list")
+    if hidden_methods:
+        try:
+            for method in parse_methods(",".join(hidden_methods)):
+                if method not in args.methods:
+                    args.methods.append(method)
+        except argparse.ArgumentTypeError as error:
+            parser.error(str(error))
+    allowed_timeouts = spec.get("allow_timeouts", [])
+    if not isinstance(allowed_timeouts, list) or not all(
+            isinstance(item, str) for item in allowed_timeouts):
+        parser.error("experiment config 'allow_timeouts' must be a string list")
+    try:
+        args.allow_timeouts = set(parse_methods(",".join(allowed_timeouts))) \
+            if allowed_timeouts else set()
     except argparse.ArgumentTypeError as error:
         parser.error(str(error))
     args.configs = [repository_path(item) for item in configs]
@@ -162,7 +209,7 @@ def apply_experiment_config(args: argparse.Namespace,
         parser.error("experiment config 'config_overrides' must be a scalar map")
     reserved = {
         "project_name", "synthesis_method", "transition_semantics",
-        "transition_backend", "boundary_semantics", "threshold_d_star",
+        "transition_backend", "cdc_threshold_backend", "boundary_semantics", "threshold_d_star",
         "benchmark_count", "record_basis_evolution", "extract_basis",
         "save_controller", "save_transitions", "user_dynamics_file",
     }
@@ -188,7 +235,8 @@ def replace_assignment(text: str, key: str, value: str) -> str:
 
 def generated_config(base: str, project: str, method: str, d_star: int,
                      dynamics_file: Path,
-                     common_overrides: Optional[Dict[str, str]] = None) -> str:
+                     common_overrides: Optional[Dict[str, str]] = None,
+                     cdc_threshold_backend: str = "host") -> str:
     text = base
     boundary_match = re.search(
         r'(?m)^\s*boundary_semantics\s*=\s*"([^"]+)"\s*;', base
@@ -199,6 +247,7 @@ def generated_config(base: str, project: str, method: str, d_star: int,
         "synthesis_method": method,
         "transition_semantics": "extremal_single_successor",
         "transition_backend": "precomputed",
+        "cdc_threshold_backend": cdc_threshold_backend,
         "boundary_semantics": boundary_semantics,
         "threshold_d_star": str(d_star),
         "benchmark_count": "1",
@@ -397,18 +446,21 @@ def validate_transition_cache(path: Path, widths: Sequence[int]) -> Dict[str, in
 
 
 def pfaces_command(executable: str, config: Path, device: str, verbose: int) -> List[str]:
-    return [
-        executable, "-GH", "-k", f"mono_synth.gpu@{KERNEL_PACK}",
+    return shlex.split(executable) + [
+        "-GH", "-k", f"mono_synth.gpu@{KERNEL_PACK}",
         "-cfg", str(config), "-d", device, "-p", f"-v{verbose}",
     ]
 
 
-def run_once(*, case: str, method: str, repetition: int, config: Path,
+def run_once(*, case: str, run_method: str, repetition: int, config: Path,
              project: str, output_dir: Path, executable: str, device: str,
              verbose: int, timeout: int) -> Measurement:
-    log_path = output_dir / f"{case}.{method}.run{repetition}.log"
+    method = logical_method(run_method)
+    backend = method_backend(run_method)
+    label = run_method
+    log_path = output_dir / f"{case}.{label}.run{repetition}.log"
     canonical_source = output_dir / f"{project}.threshold.u32.bin"
-    canonical_target = output_dir / f"{case}.{method}.run{repetition}.threshold.u32.bin"
+    canonical_target = output_dir / f"{case}.{label}.run{repetition}.threshold.u32.bin"
     canonical_source.unlink(missing_ok=True)
     command = pfaces_command(executable, config, device, verbose)
     shell_command = " ".join(shlex.quote(part) for part in command)
@@ -424,13 +476,19 @@ def run_once(*, case: str, method: str, repetition: int, config: Path,
         if isinstance(captured, bytes):
             captured = captured.decode("utf-8", errors="replace")
         log_path.write_text(captured + "\nTIMEOUT\n")
-        return Measurement(case, method, repetition, "timeout", -1,
-                           (time.perf_counter() - start) * 1000,
-                           log=str(log_path), error="timeout")
+        return Measurement(
+            case=case, method=method, cdc_threshold_backend=backend,
+            repetition=repetition, status="timeout", returncode=-1,
+            wall_ms=(time.perf_counter() - start) * 1000,
+            log=str(log_path), error="timeout",
+        )
     wall_ms = (time.perf_counter() - start) * 1000
     log_path.write_text(completed.stdout)
-    measurement = Measurement(case, method, repetition, "failed",
-                              completed.returncode, wall_ms, log=str(log_path))
+    measurement = Measurement(
+        case=case, method=method, cdc_threshold_backend=backend,
+        repetition=repetition, status="failed",
+        returncode=completed.returncode, wall_ms=wall_ms, log=str(log_path),
+    )
     if completed.returncode != 0:
         measurement.error = "pFaces returned a non-zero exit status"
         return measurement
@@ -445,18 +503,23 @@ def run_once(*, case: str, method: str, repetition: int, config: Path,
     measurement.output_sha256 = hashlib.sha256(payload).hexdigest()
     measurement.output_bytes = len(payload)
     integer_fields = (
-        "safe_cells", "cdc_epochs", "cdc_mutations", "gfp_rounds",
-        "frontier_batches", "membership_queries", "binary_search_probes",
+        "safe_cells", "cdc_epochs", "cdc_passes", "cdc_mutations", "gfp_rounds",
+        "frontier_batches", "membership_queries", "speculative_membership_queries",
+        "binary_search_probes",
         "allocated_bytes",
     )
     float_fields = (
         "transition_ms", "membership_ms", "representation_ms",
-        "basis_update_ms", "solver_ms",
+        "threshold_maintenance_ms", "basis_update_ms", "solver_ms",
     )
     for field in integer_fields:
         setattr(measurement, field, int(stats.get(field, "0")))
     for field in float_fields:
         setattr(measurement, field, float(stats.get(field, "0")))
+    measurement.cdc_threshold_backend = stats.get(
+        "cdc_threshold_backend", backend
+    )
+    measurement.cdc_pass_hashes = stats.get("cdc_pass_hashes", "")
     return measurement
 
 
@@ -475,22 +538,49 @@ def validate_case(measurements: Iterable[Measurement],
             f"canonical output mismatch: hashes={hashes}, "
             f"safe_cells={safe_counts}, bytes={output_sizes}"
         )
-    validated_methods = tuple(
-        method for method in ALL_METHODS
-        if any(row.method == method for row in rows)
+    variant_order = (
+        ("cdc", "host"), ("cdc_threshold", "host"),
+        ("cdc_threshold", "gpu"), ("automatica_scan", "host"),
+        ("automatica_threshold", "host"), ("threshold", "host"),
+        ("bitmap_reference", "host"),
+        ("threshold_cpu_reference", "host"),
     )
-    by_method = {
-        method: [row for row in rows if row.method == method]
-        for method in validated_methods
+    by_variant = {
+        variant: [row for row in rows
+                  if (row.method, row.cdc_threshold_backend) == variant]
+        for variant in variant_order
+        if any((row.method, row.cdc_threshold_backend) == variant for row in rows)
     }
-    for method, method_rows in by_method.items():
+    for variant, method_rows in by_variant.items():
         counters = {
-            (row.cdc_epochs, row.cdc_mutations, row.gfp_rounds,
+            (row.cdc_passes, row.cdc_mutations, row.gfp_rounds,
              row.frontier_batches)
             for row in method_rows
         }
         if len(counters) != 1:
-            raise RuntimeError(f"{method} counters vary across repetitions")
+            raise RuntimeError(f"{variant} counters vary across repetitions")
+    cdc_variants = tuple(
+        variant for variant in (
+            ("cdc", "host"), ("cdc_threshold", "host"),
+            ("cdc_threshold", "gpu"),
+        ) if variant in by_variant
+    )
+    if len(cdc_variants) > 1:
+        cdc_traces = {
+            (by_variant[variant][0].cdc_passes,
+             by_variant[variant][0].cdc_mutations,
+             by_variant[variant][0].cdc_pass_hashes)
+            for variant in cdc_variants
+        }
+        if len(cdc_traces) != 1:
+            raise RuntimeError(
+                "CDC scan and CDC-threshold backends have different pass traces: "
+                f"{cdc_traces}"
+            )
+    by_method = {
+        method: [row for row in rows if row.method == method]
+        for method in ALL_METHODS if any(row.method == method for row in rows)
+    }
     outer_methods = tuple(
         method for method in (
             "automatica_scan", "automatica_threshold", "threshold",
@@ -523,17 +613,43 @@ def write_csv(path: Path, rows: Sequence[Measurement]) -> None:
         writer.writerows(asdict(row) for row in rows)
 
 
+def clean_generated_case_outputs(output_dir: Path, case: str,
+                                 project: str) -> None:
+    """Remove only files generated by an earlier run of this exact case."""
+    for path in output_dir.glob(f"{case}.*"):
+        if path.is_file():
+            path.unlink()
+    for suffix in (".transitions.u64.v2.bin", ".threshold.u32.bin"):
+        path = output_dir / f"{project}{suffix}"
+        if path.is_file():
+            path.unlink()
+
+
 def write_summary(path: Path, rows: Sequence[Measurement],
                   transition_validation: Dict[str, int], warmups: int,
                   measured_runs: int) -> None:
     summary = {}
-    reported_methods = tuple(
-        method for method in ALL_METHODS
-        if any(row.method == method for row in rows)
-    )
-    for method in reported_methods:
-        measured = [row for row in rows if row.method == method and row.repetition > 0]
-        summary[method] = {
+    reported_variants = []
+    for row in rows:
+        variant = (row.method, row.cdc_threshold_backend)
+        if variant not in reported_variants:
+            reported_variants.append(variant)
+    reported_methods = []
+    for method, backend in reported_variants:
+        label = f"{method}_{backend}" if method == "cdc_threshold" else method
+        measured = [
+            row for row in rows
+            if row.method == method and row.cdc_threshold_backend == backend
+            and row.repetition > 0 and row.status == "ok"
+        ]
+        if not measured:
+            summary[label] = {"status": "incomplete"}
+            reported_methods.append(label)
+            continue
+        reported_methods.append(label)
+        summary[label] = {
+            "logical_method": method,
+            "cdc_threshold_backend": backend,
             "reference_only": method in REFERENCE_METHODS,
             "median_solver_ms": statistics.median(row.solver_ms for row in measured),
             "min_solver_ms": min(row.solver_ms for row in measured),
@@ -542,17 +658,33 @@ def write_summary(path: Path, rows: Sequence[Measurement],
             "safe_cells": measured[0].safe_cells,
             "allocated_bytes": measured[0].allocated_bytes,
             "transition_bytes": measured[0].transition_bytes,
+            "phase_medians_ms": {
+                field: statistics.median(getattr(row, field) for row in measured)
+                for field in (
+                    "transition_ms", "membership_ms", "representation_ms",
+                    "threshold_maintenance_ms", "basis_update_ms", "solver_ms",
+                )
+            },
             "algorithm_counters": {
-                "cdc_epochs": measured[0].cdc_epochs,
+                "cdc_passes": measured[0].cdc_passes,
                 "cdc_mutations": measured[0].cdc_mutations,
                 "gfp_rounds": measured[0].gfp_rounds,
                 "frontier_batches": measured[0].frontier_batches,
             },
         }
+    cdc_threshold_candidates = [
+        label for label in ("cdc_threshold_host", "cdc_threshold_gpu")
+        if label in summary and "median_solver_ms" in summary[label]
+    ]
+    if cdc_threshold_candidates:
+        summary["cdc_threshold_visible_backend"] = min(
+            cdc_threshold_candidates,
+            key=lambda label: summary[label]["median_solver_ms"],
+        ).removeprefix("cdc_threshold_")
     threshold_time = summary.get("threshold", {}).get("median_solver_ms", 0.0)
     summary["speedup_scope"] = "evaluated complete precomputed implementations"
     summary["benchmark_protocol"] = {
-        "methods": list(reported_methods),
+        "methods": reported_methods,
         "warmup_runs": warmups,
         "measured_runs": measured_runs,
         "stochastic_seeds": "not applicable; all solvers are deterministic",
@@ -562,7 +694,7 @@ def write_summary(path: Path, rows: Sequence[Measurement],
         method for method in (
             "automatica_scan", "automatica_threshold", "threshold",
             "bitmap_reference", "threshold_cpu_reference",
-        ) if method in summary
+        ) if method in summary and "algorithm_counters" in summary[method]
     )
     outer_rounds = {
         summary[method]["algorithm_counters"]["gfp_rounds"]
@@ -573,9 +705,73 @@ def write_summary(path: Path, rows: Sequence[Measurement],
     )
     summary["speedups_vs_threshold"] = {
         method: summary[method]["median_solver_ms"] / threshold_time
-        for method in reported_methods if method != "threshold" and threshold_time > 0
+        for method in reported_methods
+        if method != "threshold" and threshold_time > 0
+        and "median_solver_ms" in summary[method]
     }
     path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+
+
+def write_paper_table(path: Path, rows: Sequence[Measurement]) -> None:
+    measured = [row for row in rows if row.status == "ok" and row.repetition > 0]
+
+    def variant(method: str, backend: str = "host") -> List[Measurement]:
+        return [row for row in measured
+                if row.method == method and row.cdc_threshold_backend == backend]
+
+    cdc_threshold_variants = [
+        values for values in (
+            variant("cdc_threshold", "host"),
+            variant("cdc_threshold", "gpu"),
+        ) if values
+    ]
+    selected_cdc_threshold = min(
+        cdc_threshold_variants,
+        key=lambda values: statistics.median(row.solver_ms for row in values),
+    ) if cdc_threshold_variants else []
+    specifications = [
+        ("CDC", variant("cdc")),
+        ("CDC + threshold", selected_cdc_threshold),
+        ("Automatica scan", variant("automatica_scan")),
+        ("Automatica + threshold", variant("automatica_threshold")),
+        ("Threshold GFP", variant("threshold")),
+        ("Bitmap GFP", variant("bitmap_reference")),
+    ]
+
+    def median(values: Sequence[Measurement], field: str) -> float:
+        return statistics.median(getattr(row, field) for row in values)
+
+    lines = [
+        "% Generated by tools/run_solver_benchmark.py; do not edit by hand.",
+        "% Steps: CDC=P/M (passes/mutations), Automatica=R/F (outer rounds/frontier batches), GFP=R.",
+    ]
+    for label, values in specifications:
+        if not values:
+            continue
+        first = values[0]
+        if first.method in ("cdc", "cdc_threshold"):
+            steps = f"{first.cdc_passes}/{first.cdc_mutations}"
+        elif first.method.startswith("automatica"):
+            steps = f"{first.gfp_rounds}/{first.frontier_batches}"
+        else:
+            steps = str(first.gfp_rounds)
+        visible_label = label
+        if first.method == "cdc_threshold":
+            visible_label += f" ({first.cdc_threshold_backend})"
+        phases = [
+            median(values, "membership_ms"),
+            median(values, "representation_ms"),
+            median(values, "threshold_maintenance_ms"),
+            median(values, "basis_update_ms"),
+            median(values, "solver_ms"),
+        ]
+        allocated_mib = first.allocated_bytes / (1024.0 * 1024.0)
+        lines.append(
+            f"{visible_label} & {steps} & " +
+            " & ".join(f"{value:.3f}\\,ms" for value in phases) +
+            f" & {allocated_mib:.2f}\\,MiB \\\\"
+        )
+    path.write_text("\n".join(lines) + "\n")
 
 
 def main() -> int:
@@ -587,11 +783,11 @@ def main() -> int:
         help="Load methods, grids, run counts, device, timeout, and output from JSON",
     )
     parser.add_argument(
-        "--methods", default=list(PRODUCTION_METHODS), type=parse_methods,
-        help="Comma-separated solver subset (default: all four production methods)",
+        "--methods", default=list(DEFAULT_RUN_METHODS), type=parse_methods,
+        help="Comma-separated solver subset (default: all five production methods and both CDC-threshold backends)",
     )
     parser.add_argument("--output", type=Path,
-                        default=ROOT / "tools" / "benchmark_results" / "four_methods")
+                        default=ROOT / "tools" / "benchmark_results" / "solver_benchmark")
     parser.add_argument("--pfaces", default="pfaces")
     parser.add_argument("--device", default="1")
     parser.add_argument("--warmups", type=int, default=1)
@@ -613,7 +809,7 @@ def main() -> int:
               "the same warm-up/five-run protocol and equality gate"),
     )
     parser.add_argument("--dry-run", action="store_true")
-    parser.set_defaults(config_overrides={})
+    parser.set_defaults(config_overrides={}, allow_timeouts=set())
     args = parser.parse_args()
     apply_experiment_config(args, parser)
     if not args.configs:
@@ -642,7 +838,7 @@ def main() -> int:
         d_star = deterministic_axis(widths)
         transition_bytes = 8 * product(widths)
         case = base_path.stem
-        project = f"four_method_{case}"
+        project = f"solver_benchmark_{case}"
         cache_path = output_dir / f"{project}.transitions.u64.v2.bin"
         dynamics_match = re.search(r'user_dynamics_file\s*=\s*"([^"]+)"', base)
         if not dynamics_match:
@@ -656,68 +852,82 @@ def main() -> int:
                 method for method in REFERENCE_METHODS
                 if method not in methods_to_run
             )
+        if args.dry_run:
+            print(f"{case}: widths={widths}, d*={d_star}")
+            continue
+        clean_generated_case_outputs(output_dir, case, project)
         generated_paths = {}
         for method in methods_to_run:
             text = generated_config(
-                base, project, method, d_star, dynamics_file,
+                base, project, logical_method(method), d_star, dynamics_file,
                 args.config_overrides,
+                method_backend(method),
             )
             path = output_dir / f"{case}.{method}.cfg"
             path.write_text(text)
             generated_paths[method] = path
-        if args.dry_run:
-            print(f"{case}: widths={widths}, d*={d_star}")
-            continue
 
         cache_path.unlink(missing_ok=True)
         case_rows: List[Measurement] = []
-        transition_validation = None
-        run_ids = list(range(1 - args.warmups, 1)) + list(
-            range(1, args.repetitions + 1)
+        cache_method = "threshold" if "threshold" in methods_to_run else methods_to_run[0]
+        cache_prepare = run_once(
+            case=case, run_method=cache_method, repetition=-999,
+            config=generated_paths[cache_method], project=project,
+            output_dir=output_dir, executable=args.pfaces,
+            device=args.device, verbose=args.verbose, timeout=args.timeout,
         )
-        for method in methods_to_run:
-            for repetition in run_ids:  # nonpositive = warm-up; positive = measured
-                row = run_once(
-                    case=case, method=method, repetition=repetition,
-                    config=generated_paths[method], project=project,
-                    output_dir=output_dir, executable=args.pfaces,
-                    device=args.device, verbose=args.verbose, timeout=args.timeout,
+        if cache_prepare.status != "ok":
+            raise RuntimeError(
+                f"{case} shared transition-cache preparation failed; "
+                f"see {cache_prepare.log}: {cache_prepare.error}"
+            )
+        transition_validation = validate_transition_cache(cache_path, widths)
+        if transition_validation["violations"]:
+            message = (
+                "successor table is not order preserving: "
+                f"{transition_validation['violations']} adjacent violations; "
+                f"first at state {transition_validation['first_state']}, "
+                f"dimension {transition_validation['first_dimension']}"
+            )
+            if not args.allow_nonmonotone_diagnostic:
+                raise RuntimeError(message)
+            print(f"WARNING: {message}; diagnostic timings only", flush=True)
+        run_ids = list(range(1 - args.warmups, 1)) + list(range(1, args.repetitions + 1))
+        run_plan = []
+        for sequence, repetition in enumerate(run_ids):
+            shift = sequence % len(methods_to_run)
+            order = methods_to_run[shift:] + methods_to_run[:shift]
+            run_plan.extend((method, repetition) for method in order)
+        for method, repetition in run_plan:
+            row = run_once(
+                case=case, run_method=method, repetition=repetition,
+                config=generated_paths[method], project=project,
+                output_dir=output_dir, executable=args.pfaces,
+                device=args.device, verbose=args.verbose, timeout=args.timeout,
+            )
+            row.transition_bytes = transition_bytes
+            case_rows.append(row)
+            print(f"{case} {method} run={repetition}: {row.status} "
+                  f"solver_ms={row.solver_ms:.3f} hash={row.output_sha256[:12]}",
+                  flush=True)
+            if row.status != "ok":
+                if row.status == "timeout" and method in args.allow_timeouts:
+                    print(f"INCOMPLETE: allowed timeout for {method}", flush=True)
+                    continue
+                raise RuntimeError(
+                    f"{case} {method} run={repetition} failed; see {row.log}: "
+                    f"{row.error}"
                 )
-                row.transition_bytes = transition_bytes
-                case_rows.append(row)
-                print(f"{case} {method} run={repetition}: {row.status} "
-                      f"solver_ms={row.solver_ms:.3f} hash={row.output_sha256[:12]}",
-                      flush=True)
-                if row.status != "ok":
-                    raise RuntimeError(
-                        f"{case} {method} run={repetition} failed; see {row.log}: "
-                        f"{row.error}"
-                    )
-                if transition_validation is None:
-                    transition_validation = validate_transition_cache(
-                        cache_path, widths
-                    )
-                    if transition_validation["violations"]:
-                        message = (
-                            "successor table is not order preserving: "
-                            f"{transition_validation['violations']} adjacent "
-                            "violations; first at state "
-                            f"{transition_validation['first_state']}, dimension "
-                            f"{transition_validation['first_dimension']}"
-                        )
-                        if not args.allow_nonmonotone_diagnostic:
-                            raise RuntimeError(message)
-                        print(f"WARNING: {message}; diagnostic timings only",
-                              flush=True)
+        successful_rows = [row for row in case_rows if row.status == "ok"]
         validate_case(
-            case_rows,
+            successful_rows,
             require_outer_equality=not args.allow_nonmonotone_diagnostic,
         )
-        assert transition_validation is not None
         all_rows.extend(case_rows)
         write_csv(output_dir / f"{case}.measurements.csv", case_rows)
         write_summary(output_dir / f"{case}.summary.json", case_rows,
                       transition_validation, args.warmups, args.repetitions)
+        write_paper_table(output_dir / f"{case}.paper_table.tex", case_rows)
 
     if all_rows:
         write_csv(output_dir / "all_measurements.csv", all_rows)

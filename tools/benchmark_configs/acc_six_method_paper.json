@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "name": "acc-six-visible-method-paper-benchmark",
+  "configs": [
+    "examples/acc/acc.cfg"
+  ],
+  "methods": [
+    "cdc",
+    "cdc_threshold_host",
+    "cdc_threshold_gpu",
+    "automatica_scan",
+    "automatica_threshold",
+    "threshold",
+    "bitmap_reference"
+  ],
+  "hidden_methods": [
+    "threshold_cpu_reference"
+  ],
+  "state_eta": "1.0,0.5,0.5",
+  "warmup_runs": 1,
+  "measured_runs": 5,
+  "device": "1",
+  "timeout_seconds": 300,
+  "verbose": 1,
+  "output": "tools/benchmark_results/acc_six_method_paper",
+  "config_overrides": {
+    "max_basis_elements": 50000
+  },
+  "allow_nonmonotone_diagnostic": false,
+  "allow_timeouts": []
+}

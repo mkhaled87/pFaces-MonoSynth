@@ -97,7 +97,7 @@ explicit reference modes when `--include-references` is requested).
 Start with a full-resolution acceptance run:
 
 ```bash
-python3 tools/run_four_method_benchmark.py \
+python3 tools/run_solver_benchmark.py \
   examples/turn_oncoming_first/turn_oncoming_first.cfg \
   --device 1 \
   --include-references \
@@ -107,7 +107,7 @@ python3 tools/run_four_method_benchmark.py \
 For a quick coarsened proof of concept using the same paper dynamics and bounds:
 
 ```bash
-python3 tools/run_four_method_benchmark.py \
+python3 tools/run_solver_benchmark.py \
   examples/turn_oncoming_first/turn_oncoming_first.cfg \
   --state-eta 5,2,5 \
   --device 1 \

@@ -1,0 +1,14 @@
+threshold_decrement {
+    threshold_table {
+        MemConfig = "pfaces_rw_global";
+        isNewOrResident = "false";
+        residentFuncIdx = "2";
+        residentFuncArgIdx = "3";
+        baseTypeSize = "4";
+    }
+    threshold_key {
+        MemConfig = "pfaces_rw_global";
+        HostDoWrite = "true";
+        baseTypeSize = "8";
+    }
+}

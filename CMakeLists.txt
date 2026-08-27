@@ -10,6 +10,9 @@ else()
   include($ENV{PFACES_SDK_ROOT}/pfaces_kernel.cmake)
 endif()
 set(CMAKE_CXX_STANDARD 14)
+option(MONOSYNTH_EXPENSIVE_INVARIANT_CHECKS
+       "Enable quadratic trusted-antichain assertions in the production driver"
+       OFF)
 
 
 # Kernel driver name and its sources
@@ -29,6 +32,10 @@ target_include_directories(${PFACES_KERNEL} PUBLIC
     ${PROJECT_SOURCE_DIR}/kernel-driver
     ${OPENSSL_INCLUDE_DIR}
 )
+if(MONOSYNTH_EXPENSIVE_INVARIANT_CHECKS)
+  target_compile_definitions(${PFACES_KERNEL} PRIVATE
+      MONOSYNTH_EXPENSIVE_INVARIANT_CHECKS=1)
+endif()
 
 # Include link configs for the kernel.
 include($ENV{PFACES_SDK_ROOT}/pfaces_link.cmake)
@@ -45,8 +52,8 @@ if(BUILD_TESTING)
 
   find_package(Python3 COMPONENTS Interpreter)
   if(Python3_Interpreter_FOUND)
-    add_test(NAME four_method_oracle
+    add_test(NAME solver_method_oracle
              COMMAND ${Python3_EXECUTABLE}
-                     ${PROJECT_SOURCE_DIR}/tests/check_four_methods.py)
+                     ${PROJECT_SOURCE_DIR}/tests/check_solver_methods.py)
   endif()
 endif()

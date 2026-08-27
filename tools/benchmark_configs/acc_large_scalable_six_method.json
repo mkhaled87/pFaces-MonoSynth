@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "name": "acc-large-scalable-six-method-stress",
+  "configs": [
+    "examples/acc/acc.cfg"
+  ],
+  "methods": [
+    "cdc_threshold_host",
+    "automatica_scan",
+    "automatica_threshold",
+    "threshold",
+    "bitmap_reference"
+  ],
+  "state_eta": "0.25,0.125,0.125",
+  "warmup_runs": 0,
+  "measured_runs": 1,
+  "device": "1",
+  "timeout_seconds": 900,
+  "verbose": 1,
+  "output": "tools/benchmark_results/acc_large_scalable_six_method",
+  "config_overrides": {
+    "max_basis_elements": 50000
+  },
+  "allow_nonmonotone_diagnostic": false,
+  "allow_timeouts": [
+    "cdc_threshold_host",
+    "automatica_scan",
+    "automatica_threshold"
+  ]
+}

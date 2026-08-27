@@ -44,3 +44,17 @@ __kernel void threshold_prefix(
         threshold_table[lower] = max(threshold_table[lower], threshold_table[upper]);
     }
 }
+
+/* Exact O(1) update for deleting one maximal state b from a lower set:
+ * only tau(pi(b)) changes, and it decreases by one.  ULONG_MAX is a no-op
+ * sentinel used when a speculative GPU pass contains no unsafe generator. */
+__kernel void threshold_decrement(
+    __global uint* threshold_table,
+    __global const ulong* threshold_key
+) {
+    if (get_global_id(0) != 0) return;
+    const ulong key = threshold_key[0];
+    if (key >= (ulong)@@THRESHOLD_TABLE_SIZE@@) return;
+    const uint height = threshold_table[key];
+    if (height > 0u) threshold_table[key] = height - 1u;
+}

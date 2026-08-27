@@ -78,13 +78,16 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(
       config_(std::make_shared<configReader>(configuration)),
       method_(config_->getSynthesisMethod()),
       backend_(config_->getTransitionBackend()),
+      cdc_threshold_backend_(config_->getCdcThresholdBackend()),
       state_dimension_(config_->getSsDim()),
       max_basis_elements_(config_->getMaxBasisElements()),
       current_basis_(max_basis_elements_),
       target_basis_(max_basis_elements_),
       work_basis_(max_basis_elements_),
       controlled_basis_(max_basis_elements_),
-      frontier_basis_(max_basis_elements_) {
+      frontier_basis_(max_basis_elements_),
+      cdc_snapshot_basis_(max_basis_elements_),
+      cdc_query_basis_(max_basis_elements_) {
   if (state_dimension_ == 0) throw std::invalid_argument("state dimension is zero");
   if (backend_ == TransitionBackend::INLINE &&
       method_ != SynthesisMethod::THRESHOLD &&
@@ -159,6 +162,8 @@ pfacesKernel_mono_synth::pfacesKernel_mono_synth(
 
   std::cout << "[MonoSynth] method=" << synthesisMethodName(method_)
             << ", transition_backend=" << transitionBackendName(backend_)
+            << ", cdc_threshold_backend="
+            << cdcThresholdBackendName(cdc_threshold_backend_)
             << ", boundary_semantics="
             << boundarySemanticsName(config_->getBoundarySemantics())
             << ", states=" << total_states_ << ", d*=" << threshold_d_star_
@@ -271,13 +276,18 @@ void pfacesKernel_mono_synth::registerKernelFunctions(const std::string& path) {
                          method_ == SynthesisMethod::AUTOMATICA_SCAN;
   const bool uses_automatica_threshold =
       method_ == SynthesisMethod::AUTOMATICA_THRESHOLD;
+  const bool uses_gpu_cdc_threshold =
+      method_ == SynthesisMethod::CDC_THRESHOLD &&
+      cdc_threshold_backend_ == CdcThresholdBackend::GPU;
+  const bool uses_threshold_membership =
+      uses_automatica_threshold || uses_gpu_cdc_threshold;
   const bool uses_threshold_gfp = method_ == SynthesisMethod::THRESHOLD;
   const std::size_t scan_capacity = uses_scan ? max_basis_elements_ : 1;
   const std::size_t scan_coordinates = uses_scan ? basis_coordinates : state_dimension_;
   const std::size_t threshold_query_capacity =
-      uses_automatica_threshold ? max_basis_elements_ : 1;
+      uses_threshold_membership ? max_basis_elements_ : 1;
   const std::size_t automatica_table_entries =
-      uses_automatica_threshold ? table_entries : 1;
+      uses_threshold_membership ? table_entries : 1;
   const std::size_t conversion_coordinates =
       uses_automatica_threshold ? basis_coordinates : state_dimension_;
   const std::size_t gfp_table_entries = uses_threshold_gfp ? table_entries : 1;
@@ -326,6 +336,9 @@ void pfacesKernel_mono_synth::registerKernelFunctions(const std::string& path) {
        {reference_bitmap_words, reference_bitmap_words, 1});
   load("bitmap_gfp_prefix.mem", "bitmap_gfp_prefix",
        {"bitmap", "sweep_params"}, {reference_bitmap_words, 2});
+  load("threshold_decrement.mem", "threshold_decrement",
+       {"threshold_table", "threshold_key"},
+       {automatica_table_entries, 1});
 }
 
 void pfacesKernel_mono_synth::configureParallelProgram(
@@ -352,6 +365,9 @@ void pfacesKernel_mono_synth::configureParallelProgram(
   switch (method_) {
     case SynthesisMethod::CDC:
       appendCdcSchedule(program, advisor, offset);
+      break;
+    case SynthesisMethod::CDC_THRESHOLD:
+      appendCdcThresholdSchedule(program, advisor, offset);
       break;
     case SynthesisMethod::AUTOMATICA_SCAN:
       appendAutomaticaSchedule(program, advisor, offset, MembershipKind::SCAN);
@@ -471,6 +487,68 @@ void pfacesKernel_mono_synth::appendCdcSchedule(
   instructions_.push_back(jump);
 }
 
+void pfacesKernel_mono_synth::appendCdcThresholdSchedule(
+    pfacesParallelProgram& program, pfacesParallelAdvisor& advisor,
+    cl::NDRange offset) {
+  if (cdc_threshold_backend_ == CdcThresholdBackend::HOST) {
+    addSync(instructions_);
+    addHost(instructions_, hostRunCdcThreshold, "runHostCdcThreshold");
+    return;
+  }
+
+  const cl::Device& device = program.getTargetDevices()[0];
+  const std::size_t predecessor =
+      functionIndex(KernelFunction::PREDECESSOR_THRESHOLD);
+  cl::NDRange membership_range{max_basis_elements_, 1, 1};
+  membership_jobs_ = advisor.distributeJob(
+      *this, predecessor, membership_range, offset,
+      program.m_isFixedJobDistribution, program.m_fixedJobDistribution, true,
+      false, false);
+  auto write_query = std::make_shared<pfacesDeviceWriteJob>(
+      device, predecessor, 5, 0);
+  auto write_query_count = std::make_shared<pfacesDeviceWriteJob>(
+      device, predecessor, 5, 1);
+  auto write_threshold = std::make_shared<pfacesDeviceWriteJob>(
+      device, predecessor, 5, 3);
+  auto read_flags = std::make_shared<pfacesDeviceReadJob>(
+      device, predecessor, 5, 4);
+
+  const std::size_t decrement =
+      functionIndex(KernelFunction::THRESHOLD_DECREMENT);
+  cl::NDRange decrement_range{1, 1, 1};
+  const auto decrement_jobs = advisor.distributeJob(
+      *this, decrement, decrement_range, offset,
+      program.m_isFixedJobDistribution, program.m_fixedJobDistribution, true,
+      false, false);
+  auto write_key = std::make_shared<pfacesDeviceWriteJob>(
+      device, decrement, 2, 1);
+
+  addSync(instructions_);
+  addHost(instructions_, hostInitGpuCdcThreshold, "initGpuCdcThreshold");
+  addWrite(instructions_, write_threshold);
+  addSync(instructions_);
+  addHost(instructions_, hostFinishRepresentation,
+          "finishGpuCdcThresholdRepresentation");
+  const std::size_t loop = instructions_.size();
+  addHost(instructions_, hostPrepareGpuCdcThreshold,
+          "prepareGpuCdcThresholdSuffix");
+  addWrite(instructions_, write_query);
+  addWrite(instructions_, write_query_count);
+  addExecute(instructions_, membership_jobs_);
+  addRead(instructions_, read_flags);
+  addSync(instructions_);
+  addHost(instructions_, hostProcessGpuCdcThreshold,
+          "commitGpuCdcThresholdPrefix");
+  addWrite(instructions_, write_key);
+  addExecute(instructions_, decrement_jobs);
+  addSync(instructions_);
+  addHost(instructions_, hostContinueGpuCdcThreshold,
+          "continueGpuCdcThreshold");
+  auto jump = std::make_shared<pfacesInstruction>();
+  jump->setAsJumpNe(loop);
+  instructions_.push_back(jump);
+}
+
 void pfacesKernel_mono_synth::appendAutomaticaSchedule(
     pfacesParallelProgram& program, pfacesParallelAdvisor& advisor,
     cl::NDRange offset, MembershipKind membership) {
@@ -515,6 +593,9 @@ void pfacesKernel_mono_synth::appendAutomaticaSchedule(
   if (membership == MembershipKind::SCAN) {
     addWrite(instructions_, write_target);
     addWrite(instructions_, write_target_size);
+    addSync(instructions_);
+    addHost(instructions_, hostFinishRepresentation,
+            "finishScanTargetRepresentation");
   }
 
   if (membership == MembershipKind::THRESHOLD) {
@@ -602,6 +683,8 @@ void pfacesKernel_mono_synth::appendThresholdSchedule(
   addWrite(instructions_, write_parity);
   addWrite(instructions_, write_changed);
   addSync(instructions_);
+  addHost(instructions_, hostFinishRepresentation,
+          "finishThresholdGfpRepresentation");
   const std::size_t loop = instructions_.size();
   addHost(instructions_, hostPrepareThresholdRound, "prepareThresholdRound");
   addWrite(instructions_, write_parity);
@@ -658,6 +741,8 @@ void pfacesKernel_mono_synth::appendReferenceSchedule(
     addWrite(instructions_, write_out);
     addWrite(instructions_, write_changed);
     addSync(instructions_);
+    addHost(instructions_, hostFinishRepresentation,
+            "finishBitmapRepresentation");
     const std::size_t loop = instructions_.size();
     addHost(instructions_, hostPrepareBitmapReference, "prepareBitmapReference");
     addWrite(instructions_, write_out);
@@ -704,6 +789,7 @@ void pfacesKernel_mono_synth::appendCommonFinalize(pfacesParallelProgram&) {
 void pfacesKernel_mono_synth::resetStatsAndTimer() {
   stats_ = SolverStats{};
   stats_.method = method_;
+  stats_.cdc_threshold_backend = cdc_threshold_backend_;
   stats_.allocated_bytes = allocated_bytes_;
   m_iterations = 0;
   solver_timer_stopped_ = false;
@@ -757,21 +843,177 @@ void pfacesKernel_mono_synth::uploadBasis(pfacesParallelProgram& program,
   }
 }
 
+TableOffset pfacesKernel_mono_synth::thresholdKey(
+    const BasisStore::Point& point) const {
+  if (point.size() != state_dimension_) {
+    throw std::invalid_argument("threshold point has the wrong dimension");
+  }
+  TableOffset key = 0;
+  for (std::size_t d : threshold_key_dimensions_) {
+    if (point[d] == 0 || point[d] > grid_widths_[d]) {
+      throw std::out_of_range("threshold point lies outside the grid");
+    }
+    key += static_cast<TableOffset>(point[d] - 1) * threshold_key_strides_[d];
+  }
+  if (point[threshold_d_star_] == 0 ||
+      point[threshold_d_star_] > grid_widths_[threshold_d_star_]) {
+    throw std::out_of_range("threshold height lies outside the grid");
+  }
+  return key;
+}
+
+BasisStore::Point pfacesKernel_mono_synth::thresholdPoint(
+    TableOffset key, Height height) const {
+  if (key >= threshold_table_size_ || height == 0 ||
+      height > grid_widths_[threshold_d_star_]) {
+    throw std::out_of_range("invalid threshold-table entry");
+  }
+  BasisStore::Point point(state_dimension_, 1);
+  TableOffset rest = key;
+  for (std::size_t d = 0; d < state_dimension_; ++d) {
+    if (d == threshold_d_star_) {
+      point[d] = height;
+    } else {
+      point[d] = static_cast<Height>(rest % grid_widths_[d] + 1);
+      rest /= grid_widths_[d];
+    }
+  }
+  return point;
+}
+
+bool pfacesKernel_mono_synth::thresholdContains(
+    const std::vector<Height>& threshold,
+    const BasisStore::Point& point) const {
+  if (threshold.size() != threshold_table_size_) {
+    throw std::invalid_argument("threshold table has the wrong size");
+  }
+  const TableOffset key = thresholdKey(point);
+  return point[threshold_d_star_] <= threshold[static_cast<std::size_t>(key)];
+}
+
+bool pfacesKernel_mono_synth::thresholdContainsFlat(
+    const std::vector<Height>& threshold, GridIndex flat) const {
+  if (flat >= total_states_) return false;
+  BasisStore::Point point(state_dimension_, 1);
+  for (std::size_t d = 0; d < state_dimension_; ++d) {
+    point[d] = static_cast<Height>(flat % grid_widths_[d] + 1);
+    flat /= grid_widths_[d];
+  }
+  return thresholdContains(threshold, point);
+}
+
+bool pfacesKernel_mono_synth::thresholdMaximal(
+    const std::vector<Height>& threshold,
+    const BasisStore::Point& point) const {
+  if (!thresholdContains(threshold, point)) return false;
+  for (std::size_t d = 0; d < state_dimension_; ++d) {
+    if (point[d] >= grid_widths_[d]) continue;
+    BasisStore::Point upper = point;
+    ++upper[d];
+    if (thresholdContains(threshold, upper)) return false;
+  }
+  return true;
+}
+
+BasisStore pfacesKernel_mono_synth::basisFromThreshold(
+    const std::vector<Height>& threshold) const {
+  if (threshold.size() != threshold_table_size_) {
+    throw std::invalid_argument("threshold table has the wrong size");
+  }
+  std::vector<BasisStore::Point> points;
+  for (TableOffset key = 0; key < threshold_table_size_; ++key) {
+    const Height height = threshold[static_cast<std::size_t>(key)];
+    if (height == 0) continue;
+    BasisStore::Point point = thresholdPoint(key, height);
+    if (thresholdMaximal(threshold, point)) points.push_back(std::move(point));
+  }
+  BasisStore basis(max_basis_elements_);
+  basis.assign_antichain(grid_widths_, points);
+  return basis;
+}
+
+BasisStore pfacesKernel_mono_synth::basisFromScratch(
+    const std::vector<Height>& scratch) const {
+  if (scratch.size() != threshold_table_size_) {
+    throw std::invalid_argument("CDC basis scratch table has the wrong size");
+  }
+  std::vector<BasisStore::Point> points;
+  points.reserve(current_basis_.size() + state_dimension_);
+  for (TableOffset key = 0; key < threshold_table_size_; ++key) {
+    const Height height = scratch[static_cast<std::size_t>(key)];
+    if (height != 0) points.push_back(thresholdPoint(key, height));
+  }
+  BasisStore basis(max_basis_elements_);
+  basis.assign_antichain(grid_widths_, points);
+  return basis;
+}
+
+void pfacesKernel_mono_synth::beginCdcPass() {
+  cdc_snapshot_basis_ = current_basis_;
+  cdc_snapshot_cursor_ = 0;
+  cdc_pass_changed_ = false;
+  ++stats_.cdc_passes;
+  ++stats_.cdc_epochs;
+  ++m_iterations;
+  if (method_ == SynthesisMethod::CDC_THRESHOLD) {
+    cdc_basis_scratch_.assign(
+        static_cast<std::size_t>(threshold_table_size_), 0);
+    for (const BasisStore::Point& point : current_basis_.coordinates()) {
+      cdc_basis_scratch_[static_cast<std::size_t>(thresholdKey(point))] =
+          point[threshold_d_star_];
+    }
+  }
+}
+
+void pfacesKernel_mono_synth::finishCdcPass() {
+  cdc_pass_hashes_.push_back(current_basis_.deterministic_hash());
+}
+
+void pfacesKernel_mono_synth::commitThresholdDeletion(
+    const BasisStore::Point& point) {
+  const auto start = std::chrono::high_resolution_clock::now();
+  const TableOffset key = thresholdKey(point);
+  Height& height = cdc_threshold_[static_cast<std::size_t>(key)];
+  if (height != point[threshold_d_star_] || height == 0) {
+    throw std::logic_error(
+        "CDC-threshold can decrement only a current maximal generator");
+  }
+  --height;
+  cdc_basis_scratch_[static_cast<std::size_t>(key)] = 0;
+  for (std::size_t d = 0; d < state_dimension_; ++d) {
+    if (point[d] <= 1) continue;
+    BasisStore::Point candidate = point;
+    --candidate[d];
+    if (thresholdMaximal(cdc_threshold_, candidate)) {
+      cdc_basis_scratch_[static_cast<std::size_t>(thresholdKey(candidate))] =
+          candidate[threshold_d_star_];
+    }
+  }
+  stats_.threshold_maintenance_ms +=
+      std::chrono::duration<double, std::milli>(
+          std::chrono::high_resolution_clock::now() - start).count();
+}
+
 size_t pfacesKernel_mono_synth::hostInitCdc(void* kernel, void*) {
   auto* self = static_cast<pfacesKernel_mono_synth*>(kernel);
   self->resetStatsAndTimer();
   self->current_basis_.initialize_box(self->grid_widths_);
+  self->cdc_pass_hashes_.clear();
+  self->beginCdcPass();
   return 0;
 }
 
 size_t pfacesKernel_mono_synth::hostPrepareCdc(void* kernel, void* program) {
   auto* self = static_cast<pfacesKernel_mono_synth*>(kernel);
   auto* parallel = static_cast<pfacesParallelProgram*>(program);
-  self->uploadBasis(*parallel, self->current_basis_, self->current_basis_,
+  const auto& snapshot = self->cdc_snapshot_basis_.coordinates();
+  std::vector<BasisStore::Point> suffix(
+      snapshot.begin() + static_cast<std::ptrdiff_t>(self->cdc_snapshot_cursor_),
+      snapshot.end());
+  self->cdc_query_basis_.assign_antichain(self->grid_widths_, suffix);
+  self->uploadBasis(*parallel, self->cdc_query_basis_, self->current_basis_,
                     MembershipKind::SCAN, true);
-  ++self->stats_.cdc_epochs;
-  ++self->m_iterations;
-  self->stats_.membership_queries += self->current_basis_.size();
+  self->stats_.speculative_membership_queries += self->cdc_query_basis_.size();
   self->phase_timer_ = std::chrono::high_resolution_clock::now();
   return 0;
 }
@@ -783,30 +1025,206 @@ size_t pfacesKernel_mono_synth::hostProcessCdc(void* kernel, void* program) {
       parallel->m_dataPool[POOL_SCAN_FLAGS].first);
   self->stats_.membership_ms += std::chrono::duration<double, std::milli>(
       std::chrono::high_resolution_clock::now() - self->phase_timer_).count();
-  std::size_t unsafe = self->current_basis_.size();
-  for (std::size_t i = 0; i < self->current_basis_.size(); ++i) {
+  std::size_t unsafe = self->cdc_query_basis_.size();
+  for (std::size_t i = 0; i < self->cdc_query_basis_.size(); ++i) {
     if (flags[i] == 0) {
       unsafe = i;
       break;
     }
   }
-  if (unsafe == self->current_basis_.size()) {
-    self->stopSolverTimer();
-    self->setCanonicalResult(self->current_basis_);
-    return 0;
+  const std::size_t committed = unsafe == self->cdc_query_basis_.size()
+                                    ? self->cdc_query_basis_.size()
+                                    : unsafe + 1;
+  self->stats_.membership_queries += committed;
+  self->cdc_snapshot_cursor_ += committed;
+
+  if (unsafe != self->cdc_query_basis_.size()) {
+    const BasisStore::Point point =
+        self->cdc_query_basis_.coordinates()[unsafe];
+    const auto start = std::chrono::high_resolution_clock::now();
+    const auto& current = self->current_basis_.coordinates();
+    const auto found = std::lower_bound(current.begin(), current.end(), point);
+    if (found == current.end() || *found != point) {
+      throw std::logic_error("CDC snapshot generator is no longer maximal");
+    }
+    self->current_basis_.erase_one_and_expand(
+        static_cast<std::size_t>(found - current.begin()));
+    const auto finish = std::chrono::high_resolution_clock::now();
+    self->stats_.basis_update_ms +=
+        std::chrono::duration<double, std::milli>(finish - start).count();
+    ++self->stats_.cdc_mutations;
+    self->cdc_pass_changed_ = true;
   }
-  const auto start = std::chrono::high_resolution_clock::now();
-  self->current_basis_.erase_one_and_expand(unsafe);
-  const auto finish = std::chrono::high_resolution_clock::now();
-  self->stats_.basis_update_ms +=
-      std::chrono::duration<double, std::milli>(finish - start).count();
-  ++self->stats_.cdc_mutations;
+
   if (self->current_basis_.empty()) {
+    self->finishCdcPass();
     self->stopSolverTimer();
     self->setCanonicalResult(self->current_basis_);
     return 0;
   }
+  if (self->cdc_snapshot_cursor_ < self->cdc_snapshot_basis_.size()) return 1;
+
+  self->finishCdcPass();
+  if (!self->cdc_pass_changed_) {
+    self->stopSolverTimer();
+    self->setCanonicalResult(self->current_basis_);
+    return 0;
+  }
+  self->beginCdcPass();
   return 1;
+}
+
+size_t pfacesKernel_mono_synth::hostRunCdcThreshold(void* kernel,
+                                                    void* program) {
+  auto* self = static_cast<pfacesKernel_mono_synth*>(kernel);
+  auto* parallel = static_cast<pfacesParallelProgram*>(program);
+  self->resetStatsAndTimer();
+  self->current_basis_.initialize_box(self->grid_widths_);
+  self->cdc_pass_hashes_.clear();
+  const auto representation_start = std::chrono::high_resolution_clock::now();
+  self->cdc_threshold_ = self->current_basis_.to_threshold(
+      self->threshold_d_star_, self->grid_widths_);
+  const auto representation_finish = std::chrono::high_resolution_clock::now();
+  self->stats_.representation_ms += std::chrono::duration<double, std::milli>(
+      representation_finish - representation_start).count();
+  const auto* transitions = reinterpret_cast<const GridIndex*>(
+      parallel->m_dataPool[POOL_NEXT_STATE].first);
+
+  while (true) {
+    self->beginCdcPass();
+    for (std::size_t i = 0; i < self->cdc_snapshot_basis_.size(); ++i) {
+      const auto membership_start = std::chrono::high_resolution_clock::now();
+      const GridIndex state = self->cdc_snapshot_basis_.flat_indices()[i];
+      const GridIndex successor = state < self->total_states_
+                                      ? transitions[state]
+                                      : std::numeric_limits<GridIndex>::max();
+      const bool safe = self->thresholdContainsFlat(
+          self->cdc_threshold_, successor);
+      const auto membership_finish = std::chrono::high_resolution_clock::now();
+      self->stats_.membership_ms += std::chrono::duration<double, std::milli>(
+          membership_finish - membership_start).count();
+      ++self->stats_.membership_queries;
+      if (!safe) {
+        self->commitThresholdDeletion(
+            self->cdc_snapshot_basis_.coordinates()[i]);
+        ++self->stats_.cdc_mutations;
+        self->cdc_pass_changed_ = true;
+      }
+    }
+    const auto materialize_start = std::chrono::high_resolution_clock::now();
+    self->current_basis_ = self->basisFromScratch(self->cdc_basis_scratch_);
+    const auto materialize_finish = std::chrono::high_resolution_clock::now();
+    self->stats_.basis_update_ms += std::chrono::duration<double, std::milli>(
+        materialize_finish - materialize_start).count();
+    self->finishCdcPass();
+    if (!self->cdc_pass_changed_ || self->current_basis_.empty()) break;
+  }
+  self->stopSolverTimer();
+  self->setCanonicalResult(self->cdc_threshold_);
+  return 0;
+}
+
+size_t pfacesKernel_mono_synth::hostInitGpuCdcThreshold(void* kernel,
+                                                        void* program) {
+  auto* self = static_cast<pfacesKernel_mono_synth*>(kernel);
+  auto* parallel = static_cast<pfacesParallelProgram*>(program);
+  self->resetStatsAndTimer();
+  self->current_basis_.initialize_box(self->grid_widths_);
+  self->cdc_pass_hashes_.clear();
+  self->phase_timer_ = std::chrono::high_resolution_clock::now();
+  self->cdc_threshold_ = self->current_basis_.to_threshold(
+      self->threshold_d_star_, self->grid_widths_);
+  std::memcpy(parallel->m_dataPool[POOL_AUTOMATICA_THRESHOLD].first,
+              self->cdc_threshold_.data(),
+              self->cdc_threshold_.size() * sizeof(Height));
+  *reinterpret_cast<TableOffset*>(
+      parallel->m_dataPool[POOL_CDC_THRESHOLD_KEY].first) =
+      std::numeric_limits<TableOffset>::max();
+  self->beginCdcPass();
+  return 0;
+}
+
+size_t pfacesKernel_mono_synth::hostPrepareGpuCdcThreshold(void* kernel,
+                                                           void* program) {
+  auto* self = static_cast<pfacesKernel_mono_synth*>(kernel);
+  auto* parallel = static_cast<pfacesParallelProgram*>(program);
+  const auto& snapshot = self->cdc_snapshot_basis_.coordinates();
+  std::vector<BasisStore::Point> suffix(
+      snapshot.begin() + static_cast<std::ptrdiff_t>(self->cdc_snapshot_cursor_),
+      snapshot.end());
+  self->cdc_query_basis_.assign_antichain(self->grid_widths_, suffix);
+  self->uploadBasis(*parallel, self->cdc_query_basis_, self->current_basis_,
+                    MembershipKind::THRESHOLD, false);
+  self->stats_.speculative_membership_queries += self->cdc_query_basis_.size();
+  self->phase_timer_ = std::chrono::high_resolution_clock::now();
+  return 0;
+}
+
+size_t pfacesKernel_mono_synth::hostProcessGpuCdcThreshold(void* kernel,
+                                                           void* program) {
+  auto* self = static_cast<pfacesKernel_mono_synth*>(kernel);
+  auto* parallel = static_cast<pfacesParallelProgram*>(program);
+  const auto* flags = reinterpret_cast<const std::uint32_t*>(
+      parallel->m_dataPool[POOL_THRESHOLD_FLAGS].first);
+  self->stats_.membership_ms += std::chrono::duration<double, std::milli>(
+      std::chrono::high_resolution_clock::now() - self->phase_timer_).count();
+  std::size_t unsafe = self->cdc_query_basis_.size();
+  for (std::size_t i = 0; i < self->cdc_query_basis_.size(); ++i) {
+    if (flags[i] == 0) {
+      unsafe = i;
+      break;
+    }
+  }
+  const std::size_t committed = unsafe == self->cdc_query_basis_.size()
+                                    ? self->cdc_query_basis_.size()
+                                    : unsafe + 1;
+  self->stats_.membership_queries += committed;
+  self->cdc_snapshot_cursor_ += committed;
+  TableOffset decrement_key = std::numeric_limits<TableOffset>::max();
+  if (unsafe != self->cdc_query_basis_.size()) {
+    const BasisStore::Point point =
+        self->cdc_query_basis_.coordinates()[unsafe];
+    decrement_key = self->thresholdKey(point);
+    self->commitThresholdDeletion(point);
+    ++self->stats_.cdc_mutations;
+    self->cdc_pass_changed_ = true;
+  }
+  self->cdc_decrement_pending_ =
+      decrement_key != std::numeric_limits<TableOffset>::max();
+  *reinterpret_cast<TableOffset*>(
+      parallel->m_dataPool[POOL_CDC_THRESHOLD_KEY].first) = decrement_key;
+
+  self->cdc_continue_ = true;
+  if (self->cdc_snapshot_cursor_ >= self->cdc_snapshot_basis_.size()) {
+    const auto materialize_start = std::chrono::high_resolution_clock::now();
+    self->current_basis_ = self->basisFromScratch(self->cdc_basis_scratch_);
+    const auto materialize_finish = std::chrono::high_resolution_clock::now();
+    self->stats_.basis_update_ms += std::chrono::duration<double, std::milli>(
+        materialize_finish - materialize_start).count();
+    self->finishCdcPass();
+    if (!self->cdc_pass_changed_ || self->current_basis_.empty()) {
+      self->cdc_continue_ = false;
+    } else {
+      self->beginCdcPass();
+    }
+  }
+  self->phase_timer_ = std::chrono::high_resolution_clock::now();
+  return 0;
+}
+
+size_t pfacesKernel_mono_synth::hostContinueGpuCdcThreshold(void* kernel,
+                                                            void*) {
+  auto* self = static_cast<pfacesKernel_mono_synth*>(kernel);
+  if (self->cdc_decrement_pending_) {
+    self->stats_.threshold_maintenance_ms +=
+        std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - self->phase_timer_).count();
+  }
+  if (!self->cdc_continue_) {
+    self->stopSolverTimer();
+    self->setCanonicalResult(self->cdc_threshold_);
+  }
+  return self->cdc_continue_ ? 1 : 0;
 }
 
 size_t pfacesKernel_mono_synth::hostInitAutomatica(void* kernel, void*) {
@@ -838,6 +1256,7 @@ size_t pfacesKernel_mono_synth::hostPrepareAutomaticaOuter(void* kernel,
     }
     *reinterpret_cast<GridIndex*>(
         parallel->m_dataPool[POOL_SCAN_TARGET_SIZE].first) = target.size();
+    self->phase_timer_ = std::chrono::high_resolution_clock::now();
   } else {
     auto* coordinates = reinterpret_cast<Height*>(
         parallel->m_dataPool[POOL_CONVERSION_BASIS].first);
@@ -964,6 +1383,7 @@ size_t pfacesKernel_mono_synth::hostInitThreshold(void* kernel, void* program) {
   auto* self = static_cast<pfacesKernel_mono_synth*>(kernel);
   auto* parallel = static_cast<pfacesParallelProgram*>(program);
   self->resetStatsAndTimer();
+  self->phase_timer_ = std::chrono::high_resolution_clock::now();
   const Height full_height = static_cast<Height>(
       self->grid_widths_[self->threshold_d_star_]);
   auto* a = reinterpret_cast<Height*>(parallel->m_dataPool[POOL_GFP_A].first);
@@ -1086,6 +1506,7 @@ size_t pfacesKernel_mono_synth::hostInitBitmapReference(void* kernel,
   auto* self = static_cast<pfacesKernel_mono_synth*>(kernel);
   auto* parallel = static_cast<pfacesParallelProgram*>(program);
   self->resetStatsAndTimer();
+  self->phase_timer_ = std::chrono::high_resolution_clock::now();
   const std::size_t words = static_cast<std::size_t>((self->total_states_ + 31) / 32);
   auto* input = reinterpret_cast<cl_uint*>(
       parallel->m_dataPool[POOL_BITMAP_IN].first);
@@ -1289,19 +1710,32 @@ size_t pfacesKernel_mono_synth::hostFinalizeSolver(void* kernel, void*) {
             << ", solver_ms=" << self->stats_.solver_ms << std::endl;
   std::cout << "MONOSYNTH_STATS"
             << " method=" << synthesisMethodName(self->method_)
+            << " cdc_threshold_backend="
+            << cdcThresholdBackendName(self->cdc_threshold_backend_)
             << " safe_cells=" << self->getSafeCellCount()
             << " cdc_epochs=" << self->stats_.cdc_epochs
+            << " cdc_passes=" << self->stats_.cdc_passes
             << " cdc_mutations=" << self->stats_.cdc_mutations
             << " gfp_rounds=" << self->stats_.gfp_rounds
             << " frontier_batches=" << self->stats_.frontier_batches
             << " membership_queries=" << self->stats_.membership_queries
+            << " speculative_membership_queries="
+            << self->stats_.speculative_membership_queries
             << " binary_search_probes=" << self->stats_.binary_search_probes
             << " allocated_bytes=" << self->stats_.allocated_bytes
             << " transition_ms=" << self->stats_.transition_ms
             << " membership_ms=" << self->stats_.membership_ms
             << " representation_ms=" << self->stats_.representation_ms
+            << " threshold_maintenance_ms="
+            << self->stats_.threshold_maintenance_ms
             << " basis_update_ms=" << self->stats_.basis_update_ms
-            << " solver_ms=" << self->stats_.solver_ms << std::endl;
+            << " solver_ms=" << self->stats_.solver_ms
+            << " cdc_pass_hashes=";
+  for (std::size_t i = 0; i < self->cdc_pass_hashes_.size(); ++i) {
+    if (i) std::cout << ',';
+    std::cout << std::hex << self->cdc_pass_hashes_[i] << std::dec;
+  }
+  std::cout << std::endl;
   return 0;
 }
 

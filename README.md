@@ -179,10 +179,10 @@ Benchmark ACC at large bitmap/threshold grids:
 python3 tools/benchmark_bitmap_gfp_acc.py --sizes 1e8 1e9
 ```
 
-Run the fair four-method benchmark (one warm-up and five measured runs):
+Run the fair five-production-method benchmark (one warm-up and five measured runs):
 
 ```bash
-python3 tools/run_four_method_benchmark.py --help
+python3 tools/run_solver_benchmark.py --help
 ```
 
 Add `--include-references` to record the bitmap and CPU-threshold reference
@@ -200,15 +200,17 @@ New or generated configurations select exactly one method:
 synthesis_method = "threshold";
 transition_semantics = "extremal_single_successor";
 transition_backend = "precomputed";
+cdc_threshold_backend = "host";
 boundary_semantics = "favorable_saturating";
 threshold_d_star = "-1";
 ```
 
-Production values are `cdc`, `automatica_scan`, `automatica_threshold`, and
-`threshold`. Reference-only values are `bitmap_reference` and
+Production values are `cdc`, `cdc_threshold`, `automatica_scan`,
+`automatica_threshold`, and `threshold`. `cdc_threshold_backend` explicitly
+selects `host` or `gpu`. Reference-only values are `bitmap_reference` and
 `threshold_cpu_reference`. Legacy `use_*` solver booleans are rejected rather
 than translated implicitly. Benchmark and RT launchers generate or apply
-explicit enum-based overrides. Fair four-way timing uses `precomputed` for every
+explicit enum-based overrides. Fair solver timing uses `precomputed` for every
 method; `inline` is reserved for threshold RT/scalability runs and the bitmap
 reference. The CPU-threshold reference requires precomputed successors.
 `boundary_semantics=favorable_saturating` projects favorable per-axis exits to

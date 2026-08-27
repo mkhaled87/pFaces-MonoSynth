@@ -88,7 +88,7 @@ class BasisStore {
     if (std::adjacent_find(points_.begin(), points_.end()) != points_.end()) {
       throw std::logic_error("trusted antichain assignment contains duplicates");
     }
-#ifndef NDEBUG
+#ifdef MONOSYNTH_EXPENSIVE_INVARIANT_CHECKS
     for (std::size_t i = 0; i < points_.size(); ++i) {
       for (std::size_t j = i + 1; j < points_.size(); ++j) {
         if (covers(points_[i], points_[j]) || covers(points_[j], points_[i])) {

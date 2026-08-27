@@ -25,7 +25,8 @@ enum class KernelFunction : std::size_t {
   THRESHOLD_GFP_STEP = 6,
   BITMAP_GFP_ITERATE = 7,
   BITMAP_GFP_ADVANCE = 8,
-  BITMAP_GFP_PREFIX = 9
+  BITMAP_GFP_PREFIX = 9,
+  THRESHOLD_DECREMENT = 10
 };
 
 constexpr std::size_t functionIndex(KernelFunction function) {
@@ -36,16 +37,20 @@ enum class MembershipKind { SCAN, THRESHOLD };
 
 struct SolverStats {
   SynthesisMethod method = SynthesisMethod::THRESHOLD;
+  CdcThresholdBackend cdc_threshold_backend = CdcThresholdBackend::HOST;
   std::uint64_t cdc_epochs = 0;
+  std::uint64_t cdc_passes = 0;
   std::uint64_t cdc_mutations = 0;
   std::uint64_t gfp_rounds = 0;
   std::uint64_t frontier_batches = 0;
   std::uint64_t membership_queries = 0;
+  std::uint64_t speculative_membership_queries = 0;
   std::uint64_t binary_search_probes = 0;
   std::uint64_t allocated_bytes = 0;
   double transition_ms = 0.0;
   double membership_ms = 0.0;
   double representation_ms = 0.0;
+  double threshold_maintenance_ms = 0.0;
   double basis_update_ms = 0.0;
   double solver_ms = 0.0;
 };
@@ -114,7 +119,8 @@ class pfacesKernel_mono_synth : public pfaces2DKernel {
     POOL_BITMAP_IN = 18,
     POOL_BITMAP_OUT = 19,
     POOL_BITMAP_CHANGED = 20,
-    POOL_BITMAP_PREFIX_PARAMS = 21
+    POOL_BITMAP_PREFIX_PARAMS = 21,
+    POOL_CDC_THRESHOLD_KEY = 22
   };
 
   std::pair<std::vector<std::string>, std::vector<std::string>> getParameterList();
@@ -126,6 +132,9 @@ class pfacesKernel_mono_synth : public pfaces2DKernel {
   void appendCdcSchedule(pfacesParallelProgram& program,
                          pfacesParallelAdvisor& advisor,
                          cl::NDRange offset);
+  void appendCdcThresholdSchedule(pfacesParallelProgram& program,
+                                  pfacesParallelAdvisor& advisor,
+                                  cl::NDRange offset);
   void appendAutomaticaSchedule(pfacesParallelProgram& program,
                                 pfacesParallelAdvisor& advisor,
                                 cl::NDRange offset,
@@ -141,6 +150,11 @@ class pfacesKernel_mono_synth : public pfaces2DKernel {
   static size_t hostInitCdc(void*, void*);
   static size_t hostPrepareCdc(void*, void*);
   static size_t hostProcessCdc(void*, void*);
+  static size_t hostRunCdcThreshold(void*, void*);
+  static size_t hostInitGpuCdcThreshold(void*, void*);
+  static size_t hostPrepareGpuCdcThreshold(void*, void*);
+  static size_t hostProcessGpuCdcThreshold(void*, void*);
+  static size_t hostContinueGpuCdcThreshold(void*, void*);
   static size_t hostInitAutomatica(void*, void*);
   static size_t hostPrepareAutomaticaOuter(void*, void*);
   static size_t hostPrepareAutomaticaBatch(void*, void*);
@@ -178,12 +192,26 @@ class pfacesKernel_mono_synth : public pfaces2DKernel {
                                        const GridIndex* transitions,
                                        std::uint64_t* probes) const;
   void extractBasisFromThreshold();
+  BasisStore basisFromThreshold(const std::vector<Height>& threshold) const;
+  BasisStore basisFromScratch(const std::vector<Height>& scratch) const;
+  TableOffset thresholdKey(const BasisStore::Point& point) const;
+  bool thresholdContains(const std::vector<Height>& threshold,
+                         const BasisStore::Point& point) const;
+  bool thresholdContainsFlat(const std::vector<Height>& threshold,
+                             GridIndex flat) const;
+  bool thresholdMaximal(const std::vector<Height>& threshold,
+                        const BasisStore::Point& point) const;
+  BasisStore::Point thresholdPoint(TableOffset key, Height height) const;
+  void beginCdcPass();
+  void finishCdcPass();
+  void commitThresholdDeletion(const BasisStore::Point& point);
 
   std::string cache_file_ = "transition_cache_v2_u64.bin";
   std::uint64_t cache_fingerprint_ = 0;
   std::shared_ptr<configReader> config_;
   SynthesisMethod method_ = SynthesisMethod::THRESHOLD;
   TransitionBackend backend_ = TransitionBackend::PRECOMPUTED;
+  CdcThresholdBackend cdc_threshold_backend_ = CdcThresholdBackend::HOST;
   std::size_t state_dimension_ = 0;
   std::size_t max_basis_elements_ = 0;
   GridIndex total_states_ = 0;
@@ -202,6 +230,15 @@ class pfacesKernel_mono_synth : public pfaces2DKernel {
   BasisStore work_basis_;
   BasisStore controlled_basis_;
   BasisStore frontier_basis_;
+  BasisStore cdc_snapshot_basis_;
+  BasisStore cdc_query_basis_;
+  std::size_t cdc_snapshot_cursor_ = 0;
+  bool cdc_pass_changed_ = false;
+  bool cdc_continue_ = false;
+  bool cdc_decrement_pending_ = false;
+  std::vector<Height> cdc_threshold_;
+  std::vector<Height> cdc_basis_scratch_;
+  std::vector<std::uint64_t> cdc_pass_hashes_;
   MembershipKind automatica_membership_ = MembershipKind::SCAN;
   std::uint32_t gfp_parity_ = 0;
   std::uint32_t conversion_sweep_index_ = 0;

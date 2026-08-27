@@ -40,7 +40,7 @@ time, is therefore the fair solver comparison.
 Reproduction command:
 
 ```sh
-python3 tools/run_four_method_benchmark.py \
+python3 tools/run_solver_benchmark.py \
   --experiment-config tools/benchmark_configs/acc_large_poc.json
 ```
 
