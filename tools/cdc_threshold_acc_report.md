@@ -103,3 +103,31 @@ is not included in the visible six-method table.
 Generated CSV, JSON, logs, canonical outputs, pass hashes, transition-cache
 validation, and the ready-to-paste LaTeX rows are under
 `tools/benchmark_results/acc_six_method_paper/`.
+
+## Large-grid stress result
+
+The separate `321x161x161` stress configuration (8,320,641 states) completed
+without a timeout. These are single-run scalability observations, not paper
+medians. Common successor precomputation took 26.937 ms and is excluded below.
+
+| Method | Steps | Membership | Representation | Threshold maintenance | Basis/frontier update | GFP total | Allocated buffers |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| CDC + threshold (host) | 421/2,436,605 | 439.661 | 0.036 | 863.696 | 817.135 | 2,508.480 | 63.57 MiB |
+| Automatica scan | 26/1,181 | 3,729.550 | 14.724 | 0.000 | 71,005.700 | 76,045.300 | 64.71 MiB |
+| Automatica + threshold | 26/1,181 | 1,012.250 | 43.141 | 0.000 | 69,943.000 | 72,300.000 | 64.80 MiB |
+| Threshold GFP | 26 | 32.513 | 2.024 | 0.000 | 0.000 | 34.543 | 63.77 MiB |
+| Bitmap GFP | 26 | 359.457 | 1.097 | 0.000 | 0.000 | 360.923 | 65.55 MiB |
+
+Threshold indexing reduced Automatica's membership phase by about 3.7x on the
+large grid, but roughly 70 s of common basis/frontier maintenance dominated
+both variants, so the end-to-end improvement was only about 5%. This directly
+supports the qualified paper claim: threshold membership alone does not remove
+the Automatica schedule's antichain-maintenance bottleneck.
+
+All five solver runs and the cache-preparation output have 103,684 canonical
+bytes and SHA-256
+`4ab0a9542ac29fc6e99d6b549a54262c5fb87ea390dc5643990680705c9e451b`.
+Every solver reports 5,884,036 safe cells; both Automatica variants have exactly
+26 outer rounds and 1,181 frontier batches; the synchronous GFP methods have
+26 rounds. The 8,320,641-state transition cache has zero violations over
+24,832,640 adjacent monotonicity checks.
