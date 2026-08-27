@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Validated configurable five-method and reference benchmark for MonoSynth.
+"""Validated configurable synthesis-method benchmark for MonoSynth.
 
 Every case uses one generated configuration, one 64-bit successor cache, one
 deterministic threshold axis, and precomputed transitions.  A result row is
 written only if every measured run produces the same canonical threshold bytes.
-The default remains the fair four-production-method, one-warm-up/five-run
+The default remains the fair five-algorithm, one-warm-up/five-run
 protocol.  ``--experiment-config`` may select a validated method subset and a
 different proof-of-concept repetition count from one JSON file.
 """
@@ -16,9 +16,11 @@ import array
 import csv
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
+import signal
 import statistics
 import struct
 import subprocess
@@ -236,7 +238,8 @@ def replace_assignment(text: str, key: str, value: str) -> str:
 def generated_config(base: str, project: str, method: str, d_star: int,
                      dynamics_file: Path,
                      common_overrides: Optional[Dict[str, str]] = None,
-                     cdc_threshold_backend: str = "host") -> str:
+                     cdc_threshold_backend: str = "host",
+                     transition_backend: str = "precomputed") -> str:
     text = base
     boundary_match = re.search(
         r'(?m)^\s*boundary_semantics\s*=\s*"([^"]+)"\s*;', base
@@ -246,7 +249,7 @@ def generated_config(base: str, project: str, method: str, d_star: int,
         "project_name": project,
         "synthesis_method": method,
         "transition_semantics": "extremal_single_successor",
-        "transition_backend": "precomputed",
+        "transition_backend": transition_backend,
         "cdc_threshold_backend": cdc_threshold_backend,
         "boundary_semantics": boundary_semantics,
         "threshold_d_star": str(d_star),
@@ -254,7 +257,7 @@ def generated_config(base: str, project: str, method: str, d_star: int,
         "record_basis_evolution": "false",
         "extract_basis": "false",
         "save_controller": "true",
-        "save_transitions": "true",
+        "save_transitions": "true" if transition_backend == "precomputed" else "false",
         "user_dynamics_file": str(dynamics_file),
     }
     legacy = (
@@ -465,16 +468,19 @@ def run_once(*, case: str, run_method: str, repetition: int, config: Path,
     command = pfaces_command(executable, config, device, verbose)
     shell_command = " ".join(shlex.quote(part) for part in command)
     start = time.perf_counter()
+    process = subprocess.Popen(
+        ["bash", "-lc", shell_command], cwd=output_dir,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        start_new_session=True,
+    )
     try:
-        completed = subprocess.run(
-            ["bash", "-lc", shell_command], cwd=output_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, timeout=timeout, check=False,
-        )
-    except subprocess.TimeoutExpired as error:
-        captured = error.stdout or ""
-        if isinstance(captured, bytes):
-            captured = captured.decode("utf-8", errors="replace")
+        captured, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        captured, _ = process.communicate()
         log_path.write_text(captured + "\nTIMEOUT\n")
         return Measurement(
             case=case, method=method, cdc_threshold_backend=backend,
@@ -483,25 +489,28 @@ def run_once(*, case: str, run_method: str, repetition: int, config: Path,
             log=str(log_path), error="timeout",
         )
     wall_ms = (time.perf_counter() - start) * 1000
-    log_path.write_text(completed.stdout)
+    log_path.write_text(captured)
     measurement = Measurement(
         case=case, method=method, cdc_threshold_backend=backend,
         repetition=repetition, status="failed",
-        returncode=completed.returncode, wall_ms=wall_ms, log=str(log_path),
+        returncode=process.returncode, wall_ms=wall_ms, log=str(log_path),
     )
-    if completed.returncode != 0:
+    if process.returncode != 0:
         measurement.error = "pFaces returned a non-zero exit status"
         return measurement
     if not canonical_source.exists():
         measurement.error = "canonical threshold output is missing"
         return measurement
     shutil.move(str(canonical_source), canonical_target)
-    payload = canonical_target.read_bytes()
-    stats = parse_stats(completed.stdout)
+    stats = parse_stats(captured)
     measurement.status = "ok"
     measurement.output = str(canonical_target)
-    measurement.output_sha256 = hashlib.sha256(payload).hexdigest()
-    measurement.output_bytes = len(payload)
+    digest = hashlib.sha256()
+    with canonical_target.open("rb") as stream:
+        while chunk := stream.read(16 * 1024 * 1024):
+            digest.update(chunk)
+    measurement.output_sha256 = digest.hexdigest()
+    measurement.output_bytes = canonical_target.stat().st_size
     integer_fields = (
         "safe_cells", "cdc_epochs", "cdc_passes", "cdc_mutations", "gfp_rounds",
         "frontier_batches", "membership_queries", "speculative_membership_queries",
@@ -719,19 +728,10 @@ def write_paper_table(path: Path, rows: Sequence[Measurement]) -> None:
         return [row for row in measured
                 if row.method == method and row.cdc_threshold_backend == backend]
 
-    cdc_threshold_variants = [
-        values for values in (
-            variant("cdc_threshold", "host"),
-            variant("cdc_threshold", "gpu"),
-        ) if values
-    ]
-    selected_cdc_threshold = min(
-        cdc_threshold_variants,
-        key=lambda values: statistics.median(row.solver_ms for row in values),
-    ) if cdc_threshold_variants else []
     specifications = [
         ("CDC", variant("cdc")),
-        ("CDC + threshold", selected_cdc_threshold),
+        ("CDC + threshold", variant("cdc_threshold", "host")),
+        ("CDC + threshold", variant("cdc_threshold", "gpu")),
         ("Automatica scan", variant("automatica_scan")),
         ("Automatica + threshold", variant("automatica_threshold")),
         ("Threshold GFP", variant("threshold")),

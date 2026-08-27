@@ -358,6 +358,13 @@ use_tt_only = \"true\";
     assert 'synthesis_method = "cdc_threshold";' in gpu_text
     assert 'cdc_threshold_backend = "gpu";' in gpu_text
 
+    inline_text = runner.generated_config(
+        base, "shared", "threshold", 0, Path("/absolute/dynamics.cl"),
+        transition_backend="inline",
+    )
+    assert 'transition_backend = "inline";' in inline_text
+    assert 'save_transitions = "false";' in inline_text
+
     import tempfile
     with tempfile.TemporaryDirectory() as directory:
         table_rows = []
@@ -381,8 +388,8 @@ use_tt_only = \"true\";
         runner.write_paper_table(paper_table, table_rows)
         table_text = paper_table.read_text()
         assert "CDC + threshold (host)" in table_text
-        assert "CDC + threshold (gpu)" not in table_text
-        assert table_text.count("\\\\") == 6
+        assert "CDC + threshold (gpu)" in table_text
+        assert table_text.count("\\\\") == 7
 
         cache = Path(directory) / "transitions.u64.v2.bin"
         widths = (2, 2)

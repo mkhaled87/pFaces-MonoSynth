@@ -18,8 +18,8 @@ performs one warm-up plus five measured runs, and rejects the case if
 the canonical threshold SHA-256 hashes or safe-cell counts differ. Generated
 configs, logs, canonical outputs, raw CSV measurements, and a JSON summary are
 stored under `tools/benchmark_results/solver_benchmark` by default.
-Each case also emits `CASE.paper_table.tex`, selecting the faster validated
-CDC-threshold backend and formatting the median phase breakdown for the paper.
+Each case also emits `CASE.paper_table.tex`, retaining both validated
+CDC-threshold backends and formatting the median phase breakdown for the paper.
 Before accepting a row, the runner also checks every adjacent transition for
 order preservation, requires stable counters across repetitions, requires the
 same outer-round count for the synchronous methods, requires identical CDC
@@ -30,8 +30,8 @@ count for the two Automatica membership backends.
 Pass `--include-references` to run `bitmap_reference` and
 `threshold_cpu_reference` with the same transition cache, warm-up, five measured
 runs, output-equality gate, and timing boundary. They are marked
-`reference_only` in the JSON summary and are not counted among the four
-production methods.
+`reference_only` in the JSON summary and are not counted among the five
+production algorithms.
 
 For a fully file-driven run, pass a JSON experiment specification. It controls
 the base configurations, method subset, common grid resolution, device,
@@ -52,6 +52,41 @@ The override is applied identically to every selected method.
 Strict validation is the default. `--allow-nonmonotone-diagnostic` is available
 only to diagnose legacy paper examples; its JSON summary sets
 `strict_acceptance=false`, and those timings must not be used as paper evidence.
+
+## Full paper scale matrix
+
+Use `run_full_paper_matrix.py` on the paper GPU to repeat all original ACC,
+ACC-5D, Turn-Ego, and Turn-Oncoming scales with these seven implementations:
+CDC, host and GPU CDC-threshold, both Automatica membership representations,
+threshold GFP, and bitmap GFP.
+
+```bash
+python3 tools/run_full_paper_matrix.py \
+  --pfaces /path/to/pfaces \
+  --device 1
+```
+
+The experiment matrix, method list, repetition policy, timeouts, and resource
+caps are deliberately grouped at the top of the script. Base example files are
+read-only; all derived configurations and results go to
+`tools/benchmark_results/full_paper_seven_methods/`. The run checkpoints after
+every method and resumes by default. Use a different `--output` directory after
+changing any experiment definition.
+
+The runner creates `run_plan.csv`, raw `all_runs.csv`, a combined summary CSV,
+one large Markdown table, a landscape LaTeX longtable, per-run logs, a manifest
+with input hashes, and per-case validation metadata. Successful methods must
+match complete canonical hashes and algorithm-specific counters. Methods that
+cannot fit a precomputed successor table, threshold table, or bitmap under the
+configured caps remain visible as `skipped_resource`; threshold and bitmap use
+inline dynamics beyond the precomputation cap. Thus large-scale rows never
+silently compare different transition backends.
+
+Inspect the complete plan without launching pFaces:
+
+```bash
+python3 tools/run_full_paper_matrix.py --dry-run --output /tmp/paper-matrix-plan
+```
 
 `benchmark_bitmap_gfp_acc.py` and `check_bitmap_gfp_acc.py` remain focused tools
 for the explicit `bitmap_reference` and `threshold_cpu_reference` modes.

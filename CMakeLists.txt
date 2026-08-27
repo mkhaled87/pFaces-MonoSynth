@@ -55,5 +55,8 @@ if(BUILD_TESTING)
     add_test(NAME solver_method_oracle
              COMMAND ${Python3_EXECUTABLE}
                      ${PROJECT_SOURCE_DIR}/tests/check_solver_methods.py)
+    add_test(NAME full_paper_matrix_plan
+             COMMAND ${Python3_EXECUTABLE}
+                     ${PROJECT_SOURCE_DIR}/tests/check_full_paper_matrix.py)
   endif()
 endif()
