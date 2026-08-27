@@ -10,8 +10,9 @@
 // pFaces-Including a KERNEL-Function: precompute_transitions	--- parallel algorithm in (X)
 @pfaces-include:"precompute_transitions.cl"
 
-// pFaces-Including a KERNEL-Function: check_basis_safety
-@pfaces-include:"check_basis_safety.cl"
+@pfaces-include:"predecessor_membership.cl"
+@pfaces-include:"basis_to_threshold.cl"
+@pfaces-include:"threshold_gfp.cl"
 
 // pFaces-Including KERNEL-Functions: bitmap_gfp_iterate + bitmap_gfp_advance + bitmap_gfp_prefix
 @pfaces-include:"bitmap_gfp_iterate.cl"

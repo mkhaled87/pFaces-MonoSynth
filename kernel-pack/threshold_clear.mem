@@ -1,0 +1,3 @@
+threshold_clear {
+    threshold_table { MemConfig = "pfaces_rw_global"; isNewOrResident = "false"; residentFuncIdx = "2"; residentFuncArgIdx = "3"; baseTypeSize = "4"; }
+}

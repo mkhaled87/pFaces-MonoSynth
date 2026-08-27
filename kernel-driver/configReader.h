@@ -4,6 +4,22 @@
 
 #include <pfaces-sdk.h>
 
+enum class SynthesisMethod {
+	CDC,
+	AUTOMATICA_SCAN,
+	AUTOMATICA_THRESHOLD,
+	THRESHOLD,
+	BITMAP_REFERENCE,
+	THRESHOLD_CPU_REFERENCE
+};
+
+enum class TransitionBackend { PRECOMPUTED, INLINE };
+enum class BoundarySemantics { STRICT_UNSAFE, FAVORABLE_SATURATING };
+
+const char* synthesisMethodName(SynthesisMethod method);
+const char* transitionBackendName(TransitionBackend backend);
+const char* boundarySemanticsName(BoundarySemantics semantics);
+
 class defaultConfiguration {
 public:
 
@@ -21,7 +37,7 @@ public:
 private:
 	// Member variables
 	std::string m_defaults;
-	const char* m_schema[819];
+	const char* m_schema[823];
 	static defaultConfiguration s_singleton;
 };
 
@@ -41,13 +57,11 @@ class configReader {
 	bool            m_save_transitions;
 	bool            m_save_controller;
 	bool            m_record_basis_evolution;
-	bool            m_boundary_seeding;
-	bool            m_use_threshold_table;
-	bool            m_use_tt_only;
-	bool            m_use_tt_only_gpu;
-	bool            m_use_inline_dynamics;
-	bool            m_use_prefix_sweep;
-	bool            m_use_bitmap_gfp;
+	SynthesisMethod m_synthesis_method;
+	TransitionBackend m_transition_backend;
+	BoundarySemantics m_boundary_semantics;
+	std::string     m_transition_semantics;
+	std::string     m_legacy_solver_key;
 	bool            m_extract_basis;
 	int             m_threshold_d_star;
 	size_t          m_benchmark_count;
@@ -167,13 +181,10 @@ public:
 	inline bool isSaveTransitions() const { return m_save_transitions; }
 	inline bool isSaveController() const { return m_save_controller; }
 	inline bool isRecordBasisEvolution() const { return m_record_basis_evolution; }
-	inline bool isBoundarySeeding() const { return m_boundary_seeding; }
-	inline bool isUseThresholdTable() const { return m_use_threshold_table; }
-	inline bool isUseTTOnly() const { return m_use_tt_only; }
-	inline bool isUseTTOnlyGPU() const { return m_use_tt_only_gpu; }
-	inline bool isUseInlineDynamics() const { return m_use_inline_dynamics; }
-	inline bool isUsePrefixSweep() const { return m_use_prefix_sweep; }
-	inline bool isUseBitmapGFP() const { return m_use_bitmap_gfp; }
+	inline SynthesisMethod getSynthesisMethod() const { return m_synthesis_method; }
+	inline TransitionBackend getTransitionBackend() const { return m_transition_backend; }
+	inline BoundarySemantics getBoundarySemantics() const { return m_boundary_semantics; }
+	inline const std::string& getTransitionSemantics() const { return m_transition_semantics; }
 	inline bool isExtractBasis() const { return m_extract_basis; }
 	inline int getThresholdDStarOverride() const { return m_threshold_d_star; }
 	inline size_t getBenchmarkCount() const { return m_benchmark_count; }

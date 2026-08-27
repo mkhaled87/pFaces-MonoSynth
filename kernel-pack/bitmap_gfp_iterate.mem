@@ -4,7 +4,7 @@ bitmap_gfp_iterate {
         isNewOrResident = "false";
         residentFuncIdx = "0";
         residentFuncArgIdx = "0";
-        baseTypeSize = "4";
+        baseTypeSize = "8";
     }
     bitmap_in {
         MemConfig = "pfaces_rw_global";

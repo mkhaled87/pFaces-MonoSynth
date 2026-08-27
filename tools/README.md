@@ -1,5 +1,60 @@
 # pFaces-MonoSynth Video Generation Tool
 
+## Four-method benchmark
+
+Use `run_four_method_benchmark.py` for production comparisons:
+
+```bash
+python3 tools/run_four_method_benchmark.py \
+  examples/acc/acc.cfg \
+  examples/turn_ego_first/turn_ego_first.cfg
+```
+
+The runner requires all four production methods, selects the widest grid axis
+with a lowest-index tie break, uses precomputed 64-bit successors for every
+method, preserves the base configuration's explicit boundary semantics,
+performs one warm-up plus five measured runs, and rejects the case if
+the canonical threshold SHA-256 hashes or safe-cell counts differ. Generated
+configs, logs, canonical outputs, raw CSV measurements, and a JSON summary are
+stored under `tools/benchmark_results/four_methods` by default.
+Before accepting a row, the runner also checks every adjacent transition for
+order preservation, requires stable counters across repetitions, requires the
+same outer-round count for methods 2--4, and requires the same frontier-batch
+count for the two Automatica membership backends.
+
+Pass `--include-references` to run `bitmap_reference` and
+`threshold_cpu_reference` with the same transition cache, warm-up, five measured
+runs, output-equality gate, and timing boundary. They are marked
+`reference_only` in the JSON summary and are not counted among the four
+production methods.
+
+For a fully file-driven run, pass a JSON experiment specification. It controls
+the base configurations, method subset, common grid resolution, device,
+warm-ups, measured runs, timeout, verbosity, and output directory:
+
+```bash
+python3 tools/run_four_method_benchmark.py \
+  --experiment-config tools/benchmark_configs/acc_large_poc.json
+```
+
+The solvers are deterministic, so there is no algorithmic random seed. Use
+`measured_runs` to control independent timing repetitions; the summary records
+this explicitly instead of presenting repetitions as stochastic seeds.
+
+For a quick production-kernel comparison on a coarser version of a case, pass
+one resolution per state dimension, for example `--state-eta 4,2,2` for ACC.
+The override is applied identically to all four methods.
+Strict validation is the default. `--allow-nonmonotone-diagnostic` is available
+only to diagnose legacy paper examples; its JSON summary sets
+`strict_acceptance=false`, and those timings must not be used as paper evidence.
+
+`benchmark_bitmap_gfp_acc.py` and `check_bitmap_gfp_acc.py` remain focused tools
+for the explicit `bitmap_reference` and `threshold_cpu_reference` modes.
+The equality checker also accepts a custom monotone fixture through
+`--cfg PATH --output-dir PATH`.
+
+## Video generation
+
 This tool generates 3D visualizations of the safe set evolution during the monotonicity-based synthesis process.
 
 ## Usage

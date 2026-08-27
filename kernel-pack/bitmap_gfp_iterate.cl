@@ -67,7 +67,7 @@ inline size_t bitmap_inline_successor(size_t cell_flat,
 #endif
 
 __kernel void bitmap_gfp_iterate(
-    __global const uint* next_state_table,
+    __global const ulong* next_state_table,
     __global const uint* bitmap_in,
     __global uint* bitmap_out,
     __global int* changed_flag,
@@ -82,8 +82,9 @@ __kernel void bitmap_gfp_iterate(
     const uint new_safe = (succ != (size_t)(-1)) ? bitmap_get(bitmap_in, succ) : 0u;
 #else
     (void)runtime_params;
-    const uint succ_u = next_state_table[gid_s];
-    const uint new_safe = (succ_u != 0xFFFFFFFFu) ? bitmap_get(bitmap_in, (size_t)succ_u) : 0u;
+    const ulong successor = next_state_table[gid_s];
+    const uint new_safe = successor != ULONG_MAX
+        ? bitmap_get(bitmap_in, (size_t)successor) : 0u;
 #endif
 
     if (new_safe) {

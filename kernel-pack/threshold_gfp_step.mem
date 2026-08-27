@@ -1,0 +1,8 @@
+threshold_gfp_step {
+    next_state_table { MemConfig = "pfaces_rw_global"; isNewOrResident = "false"; residentFuncIdx = "0"; residentFuncArgIdx = "0"; baseTypeSize = "8"; }
+    threshold_a { MemConfig = "pfaces_rw_global"; HostDoWrite = "true"; HostDoRead = "true"; baseTypeSize = "4"; }
+    threshold_b { MemConfig = "pfaces_rw_global"; HostDoWrite = "true"; HostDoRead = "true"; baseTypeSize = "4"; }
+    source_parity { MemConfig = "pfaces_rw_global"; HostDoWrite = "true"; baseTypeSize = "4"; }
+    changed_flag { MemConfig = "pfaces_rw_global"; HostDoWrite = "true"; HostDoRead = "true"; baseTypeSize = "4"; }
+    runtime_params { MemConfig = "pfaces_rw_global"; isNewOrResident = "false"; residentFuncIdx = "0"; residentFuncArgIdx = "1"; baseTypeSize = "4"; }
+}

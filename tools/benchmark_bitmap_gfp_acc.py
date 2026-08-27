@@ -31,9 +31,18 @@ def patch_cfg(src: str, *, name: str, eta: str, dynamics_file: Path, method: str
         "benchmark_count",
         "record_basis_evolution",
         "save_transitions",
+        "synthesis_method",
+        "transition_semantics",
+        "transition_backend",
+        "boundary_semantics",
+        "max_basis_elements",
+        "use_threshold_table",
+        "use_tt_only",
+        "use_tt_only_gpu",
+        "use_bitmap_gfp",
         "use_inline_dynamics",
         "use_prefix_sweep",
-        "max_basis_elements",
+        "boundary_seeding",
     ):
         text = re.sub(rf'\n{key}\s*=\s*"[^"]*";[^\n]*', "", text)
 
@@ -45,25 +54,19 @@ def patch_cfg(src: str, *, name: str, eta: str, dynamics_file: Path, method: str
         flags=re.S,
     )
 
-    for key in ("use_tt_only", "use_bitmap_gfp", "use_threshold_table"):
-        text = re.sub(rf'\n{key}\s*=\s*"[^"]*";', "", text)
-
     text += (
         '\nbenchmark_count = "1";\n'
         'record_basis_evolution = "false";\n'
         'save_transitions = "false";\n'
-        'use_inline_dynamics = "false";\n'
+        'transition_semantics = "extremal_single_successor";\n'
+        'transition_backend = "precomputed";\n'
+        'boundary_semantics = "favorable_saturating";\n'
         'max_basis_elements = "1000000";\n'
     )
     if method == "tt":
-        text += 'use_prefix_sweep = "true";\n'
-    else:
-        text += 'use_prefix_sweep = "false";\n'
-
-    if method == "tt":
-        text += 'use_threshold_table = "true";\nuse_tt_only = "true";\nuse_bitmap_gfp = "false";\n'
+        text += 'synthesis_method = "threshold_cpu_reference";\n'
     elif method == "bitmap":
-        text += 'use_threshold_table = "false";\nuse_tt_only = "false";\nuse_bitmap_gfp = "true";\n'
+        text += 'synthesis_method = "bitmap_reference";\n'
     else:
         raise ValueError(method)
     return text
@@ -95,19 +98,14 @@ def run_case(cfg: Path, kernel_pack: Path, device: str, cwd: Path) -> tuple[str,
         raise RuntimeError(f"benchmark failed for {cfg}")
 
     metrics: dict[str, str] = {}
-    avg = re.search(r"Average:\s+(\d+)\s+iterations,\s+(\d+)\s+ms", proc.stdout)
-    run = re.search(r"Run 1/1:\s+(\d+)\s+iterations.*?,.*?(\d+)\s+ms", proc.stdout)
-    safe = re.search(r"Safe cells:\s+(\d+)/(\d+)\s+\(([0-9.]+)%\)", proc.stdout)
-    if avg:
-        metrics["iterations"] = avg.group(1)
-        metrics["time_ms"] = avg.group(2)
-    elif run:
-        metrics["iterations"] = run.group(1)
-        metrics["time_ms"] = run.group(2)
-    if safe:
-        metrics["safe_cells"] = safe.group(1)
-        metrics["total_cells"] = safe.group(2)
-        metrics["safe_percent"] = safe.group(3)
+    lines = [line for line in proc.stdout.splitlines() if "MONOSYNTH_STATS" in line]
+    if not lines:
+        raise RuntimeError("MONOSYNTH_STATS line is missing")
+    stats = dict(re.findall(r"([a-z_]+)=([^\s]+)", lines[-1]))
+    metrics["iterations"] = stats["gfp_rounds"]
+    metrics["time_ms"] = stats["solver_ms"]
+    metrics["safe_cells"] = stats["safe_cells"]
+    metrics["allocated_bytes"] = stats["allocated_bytes"]
     metrics["stdout"] = proc.stdout
     return shell_cmd, metrics
 
@@ -146,6 +144,8 @@ def main() -> int:
             cmd, metrics = run_case(cfg_path, kernel_pack, device, out_dir)
             (out_dir / f"{name}.log").write_text(metrics.pop("stdout"))
             row = {"case": label, "method": method, "n_per_dim": str(n), "command": cmd}
+            row["total_cells"] = str(total)
+            row["safe_percent"] = str(100.0 * int(metrics["safe_cells"]) / total)
             row.update(metrics)
             rows.append(row)
             case_rows.append(row)

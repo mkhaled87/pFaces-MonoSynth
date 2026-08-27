@@ -1,0 +1,8 @@
+predecessor_scan {
+    query_flat_indices { MemConfig = "pfaces_rw_global"; HostDoWrite = "true"; baseTypeSize = "8"; }
+    query_count { MemConfig = "pfaces_rw_global"; HostDoWrite = "true"; baseTypeSize = "8"; }
+    next_state_table { MemConfig = "pfaces_rw_global"; isNewOrResident = "false"; residentFuncIdx = "0"; residentFuncArgIdx = "0"; baseTypeSize = "8"; }
+    target_basis { MemConfig = "pfaces_rw_global"; HostDoWrite = "true"; baseTypeSize = "4"; }
+    target_basis_size { MemConfig = "pfaces_rw_global"; HostDoWrite = "true"; baseTypeSize = "8"; }
+    controlled_flags { MemConfig = "pfaces_rw_global"; directionWriteOrRead = "true"; HostDoRead = "true"; baseTypeSize = "4"; }
+}

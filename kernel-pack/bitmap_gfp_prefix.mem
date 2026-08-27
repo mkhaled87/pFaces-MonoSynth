@@ -2,7 +2,7 @@ bitmap_gfp_prefix {
     bitmap {
         MemConfig = "pfaces_rw_global";
         isNewOrResident = "false";
-        residentFuncIdx = "4";
+        residentFuncIdx = "7";
         residentFuncArgIdx = "2";
         baseTypeSize = "4";
     }

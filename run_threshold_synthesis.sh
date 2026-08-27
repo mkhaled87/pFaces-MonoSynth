@@ -8,7 +8,7 @@ DEVICE_CLASS="${PFACES_DEVICE_CLASS:-G}"
 DEVICE="${PFACES_GPU_DEVICE:-1}"
 OPENCL_OPTS="${PFACES_OPENCL_OPTS:-}"
 DO_SYNTH=1
-DO_VIDEO=1
+DO_VIDEO=0
 TIMING_ONLY=0
 GIF=0
 OUT=""
@@ -24,7 +24,7 @@ Runs standalone pFaces synthesis and renders the recorded safe-set evolution.
 
 Options:
   --cfg PATH       pFaces cfg file (default: examples/acc/acc.cfg)
-  --mode MODE      threshold or basis (default: threshold)
+  --mode MODE      threshold or cdc (default: threshold)
   --device-class C|G  pFaces device class (default: $DEVICE_CLASS)
   --device ID      pFaces device id from 'pfaces -C|-G -l' (default: $DEVICE)
   --opencl-opts STR   pass extra OpenCL compiler options to pFaces (-op)
@@ -35,6 +35,7 @@ Options:
   --sample N       render every Nth iteration (default: $SAMPLE)
   --timing-only    disable CSV/video output and skip basis extraction
   --no-synth       render from existing CSV only
+  --video          render an existing compatible evolution CSV after synthesis
   --no-video       run synthesis only
   -h, --help       show this help
 EOF
@@ -66,6 +67,8 @@ while [[ $# -gt 0 ]]; do
             TIMING_ONLY=1; DO_VIDEO=0; shift ;;
         --no-synth)
             DO_SYNTH=0; shift ;;
+        --video)
+            DO_VIDEO=1; shift ;;
         --no-video)
             DO_VIDEO=0; shift ;;
         -h|--help)
@@ -78,9 +81,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$MODE" in
-    threshold|basis) ;;
+    threshold|cdc) ;;
     *)
-        echo "ERROR: --mode must be 'threshold' or 'basis'." >&2
+        echo "ERROR: --mode must be 'threshold' or 'cdc'." >&2
         exit 2 ;;
 esac
 
@@ -103,13 +106,14 @@ fi
 CFG_DIR="$(cd "$(dirname "$CFG")" && pwd)"
 CFG_FILE="$CFG_DIR/$(basename "$CFG")"
 KERNEL_PACK="$SCRIPT_DIR/kernel-pack"
+LEGACY_UNSET="use_threshold_table=__mono_synth_legacy_unset__,use_tt_only=__mono_synth_legacy_unset__,use_tt_only_gpu=__mono_synth_legacy_unset__,use_bitmap_gfp=__mono_synth_legacy_unset__,use_inline_dynamics=__mono_synth_legacy_unset__,use_prefix_sweep=__mono_synth_legacy_unset__,boundary_seeding=__mono_synth_legacy_unset__"
 
 if [[ "$MODE" == "threshold" ]]; then
     CSV="$CFG_DIR/threshold_evolution.csv"
-    CO="benchmark_count=1,save_transitions=false,use_threshold_table=true,use_tt_only=true,use_bitmap_gfp=false"
+    CO="benchmark_count=1,save_transitions=false,synthesis_method=threshold,transition_semantics=extremal_single_successor,transition_backend=precomputed,boundary_semantics=favorable_saturating,$LEGACY_UNSET"
 else
     CSV="$CFG_DIR/basis_coordinates.csv"
-    CO="benchmark_count=1,save_transitions=false,use_tt_only=false,use_bitmap_gfp=false"
+    CO="benchmark_count=1,save_transitions=false,synthesis_method=cdc,transition_semantics=extremal_single_successor,transition_backend=precomputed,boundary_semantics=favorable_saturating,$LEGACY_UNSET"
 fi
 
 if [[ "$TIMING_ONLY" == 1 ]]; then

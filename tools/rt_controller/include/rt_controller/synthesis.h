@@ -26,6 +26,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -305,11 +306,8 @@ public:
             spLaunchState, spCfg);
         
         // Configure for direct mode: no CSV, no benchmark repetition, skip cache
-        kernel_->setRecordBasisEvolution(false);
-        kernel_->setWriteIterationStats(false);  // no iteration_stats.csv in RT path
-        kernel_->setBenchmarkCount(1);
         kernel_->setSkipCache(true);
-        if (kernel_->isUseTTOnlyGPU()) {
+        if (kernel_->getSynthesisMethod() == SynthesisMethod::THRESHOLD) {
             kernel_->setExtractBasis(false);
         }
 
@@ -347,10 +345,6 @@ public:
             kernel_->setRuntimeParam0((float)param_value);
         }
 
-        // After first successful synthesis, allow skipping precompute when
-        // the RT controller sets m_skip_precompute = true.
-        // (By default, precompute always runs.)
-
         // Stage B: GPU kernel execution (precompute_transitions → iterations)
         // Suppress pFaces internal prints (benchmark stats)
         auto tg0 = Clk::now();
@@ -366,7 +360,7 @@ public:
 
         // Stage C: populate SafeSet from kernel threshold table
         auto tt0 = Clk::now();
-        if (kernel_->isUseBitmapGFP()) {
+        if (kernel_->getSynthesisMethod() == SynthesisMethod::BITMAP_REFERENCE) {
             const auto& bitmap = kernel_->getBitmapWords();
             safe_set.set_bitmap_words(
                 reinterpret_cast<const uint32_t*>(bitmap.data()),
@@ -451,6 +445,19 @@ public:
 
         auto sp_cfg = std::make_shared<pfacesConfigurationReader>(
             params_.cfg_path, "", false);
+        sp_cfg->setOverrideConfigurations({
+            {"synthesis_method", "threshold"},
+            {"transition_semantics", "extremal_single_successor"},
+            {"transition_backend", "inline"},
+            {"boundary_semantics", "favorable_saturating"},
+            {"use_threshold_table", "__mono_synth_legacy_unset__"},
+            {"use_tt_only", "__mono_synth_legacy_unset__"},
+            {"use_tt_only_gpu", "__mono_synth_legacy_unset__"},
+            {"use_bitmap_gfp", "__mono_synth_legacy_unset__"},
+            {"use_inline_dynamics", "__mono_synth_legacy_unset__"},
+            {"use_prefix_sweep", "__mono_synth_legacy_unset__"},
+            {"boundary_seeding", "__mono_synth_legacy_unset__"},
+        });
         sp_cfg->parse(defaultConfiguration::getSchema(),
                       defaultConfiguration::getDefaults());
 
@@ -461,23 +468,14 @@ public:
 
         kernel_meta_ = std::make_shared<mono_synth::pfacesKernel_mono_synth>(
             sp_launch_state, sp_cfg);
-        kernel_meta_->setRecordBasisEvolution(false);
-        kernel_meta_->setWriteIterationStats(false);
-        kernel_meta_->setBenchmarkCount(1);
         kernel_meta_->setSkipCache(true);
         kernel_meta_->setExtractBasis(false);
 
-        if (!kernel_meta_->isUseTTOnlyGPU() || !kernel_meta_->isUseInlineDynamics()) {
+        if (kernel_meta_->getSynthesisMethod() != SynthesisMethod::THRESHOLD ||
+            kernel_meta_->getTransitionBackend() != TransitionBackend::INLINE) {
             throw std::runtime_error(
-                "[FastTTInline] requires use_tt_only=true, use_tt_only_gpu=true, use_inline_dynamics=true");
+                "[FastTTInline] requires synthesis_method=threshold and transition_backend=inline");
         }
-        if (kernel_meta_->isUseBitmapGFP()) {
-            throw std::runtime_error("[FastTTInline] requires use_bitmap_gfp=false");
-        }
-        if (kernel_meta_->m_use_prefix_sweep) {
-            throw std::runtime_error("[FastTTInline] requires use_prefix_sweep=false");
-        }
-
         table_size_ = kernel_meta_->getThresholdTableSize();
         d_star_ = kernel_meta_->getThresholdDStar();
         key_strides_ = kernel_meta_->getThresholdKeyStrides();
@@ -485,7 +483,7 @@ public:
         n_dstar_ = static_cast<int>(grid_sizes[d_star_]);
 
         std::string source = load_kernel_source(params_.kernel_pack + "mono_synth.gpu.cl");
-        auto replacements = kernel_meta_->getParameterList();
+        auto replacements = kernel_meta_->getOpenClParameterList();
         for (size_t i = 0; i < replacements.first.size(); ++i)
             replace_all(source, replacements.first[i], replacements.second[i]);
         std::string unresolved = find_unresolved_macro(source);
@@ -498,12 +496,13 @@ public:
             std::string log = program_->getBuildInfo<CL_PROGRAM_BUILD_LOG>(device_);
             throw std::runtime_error("[FastTTInline] OpenCL build failed:\n" + log);
         }
-        column_kernel_ = std::make_unique<cl::Kernel>(*program_, "tt_only_column_update");
+        column_kernel_ = std::make_unique<cl::Kernel>(*program_, "threshold_gfp_step");
 
-        dummy_next_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_ONLY, sizeof(cl_uint));
-        tt_a_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_WRITE, table_size_ * sizeof(cl_int));
-        tt_b_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_WRITE, table_size_ * sizeof(cl_int));
-        changed_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_WRITE, sizeof(cl_int));
+        dummy_next_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_ONLY, sizeof(cl_ulong));
+        tt_a_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_WRITE, table_size_ * sizeof(cl_uint));
+        tt_b_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_WRITE, table_size_ * sizeof(cl_uint));
+        parity_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_ONLY, sizeof(cl_uint));
+        changed_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_WRITE, sizeof(cl_uint));
         runtime_params_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_ONLY, 4 * sizeof(cl_float));
         tt_host_.resize(table_size_);
 
@@ -520,37 +519,45 @@ public:
         if (params_.has_runtime_param)
             rt_params[0] = static_cast<cl_float>(param_value);
 
-        queue_->enqueueWriteBuffer(*tt_a_, CL_FALSE, 0, table_size_ * sizeof(cl_int), tt_host_.data());
+        queue_->enqueueWriteBuffer(*tt_a_, CL_FALSE, 0, table_size_ * sizeof(cl_uint), tt_host_.data());
+        queue_->enqueueWriteBuffer(*tt_b_, CL_FALSE, 0, table_size_ * sizeof(cl_uint), tt_host_.data());
         queue_->enqueueWriteBuffer(*runtime_params_, CL_FALSE, 0, sizeof(rt_params), rt_params);
 
-        cl::Buffer* in = tt_a_.get();
-        cl::Buffer* out = tt_b_.get();
-        int iterations = 0;
+        cl_uint parity = 0;
+        uint64_t iterations = 0;
+        if (n_dstar_ > 0 && table_size_ >
+                std::numeric_limits<uint64_t>::max() / static_cast<uint64_t>(n_dstar_))
+            throw std::overflow_error("[FastTTInline] convergence bound overflow");
+        const uint64_t max_iterations =
+            table_size_ * static_cast<uint64_t>(n_dstar_) + 1;
         auto tg0 = Clk::now();
         while (true) {
-            cl_int changed = 0;
+            cl_uint changed = 0;
+            queue_->enqueueWriteBuffer(*parity_, CL_FALSE, 0, sizeof(parity), &parity);
             queue_->enqueueWriteBuffer(*changed_, CL_FALSE, 0, sizeof(changed), &changed);
 
             column_kernel_->setArg(0, *dummy_next_);
-            column_kernel_->setArg(1, *in);
-            column_kernel_->setArg(2, *out);
-            column_kernel_->setArg(3, *changed_);
-            column_kernel_->setArg(4, *runtime_params_);
+            column_kernel_->setArg(1, *tt_a_);
+            column_kernel_->setArg(2, *tt_b_);
+            column_kernel_->setArg(3, *parity_);
+            column_kernel_->setArg(4, *changed_);
+            column_kernel_->setArg(5, *runtime_params_);
             queue_->enqueueNDRangeKernel(*column_kernel_, cl::NullRange,
                                          cl::NDRange(static_cast<size_t>(table_size_)),
                                          cl::NullRange);
             queue_->enqueueReadBuffer(*changed_, CL_TRUE, 0, sizeof(changed), &changed);
             ++iterations;
-            std::swap(in, out);
             if (changed == 0)
                 break;
-            if (iterations > n_dstar_ + 2)
+            parity ^= 1u;
+            if (iterations > max_iterations)
                 throw std::runtime_error("[FastTTInline] exceeded convergence guard");
         }
         queue_->finish();
         auto tg1 = Clk::now();
 
-        queue_->enqueueReadBuffer(*in, CL_TRUE, 0, table_size_ * sizeof(cl_int), tt_host_.data());
+        cl::Buffer& result = parity ? *tt_b_ : *tt_a_;
+        queue_->enqueueReadBuffer(result, CL_TRUE, 0, table_size_ * sizeof(cl_uint), tt_host_.data());
         safe_set.set_threshold_table(tt_host_.data(), table_size_, d_star_, key_strides_);
 
         auto t1 = Clk::now();
@@ -562,7 +569,9 @@ public:
         last_detail_.transfer_ms = total_ms - gpu_ms;
         last_detail_.precompute_ms = 0.0;
         last_detail_.gfp_ms = gpu_ms;
-        last_detail_.iterations = iterations;
+        if (iterations > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+            throw std::overflow_error("[FastTTInline] iteration count exceeds int32");
+        last_detail_.iterations = static_cast<int>(iterations);
         last_detail_.basis_size = 0;
         last_detail_.safe_cells = safe_set.count_safe_cells();
         last_detail_.total_cells = safe_set.total_cells();
@@ -640,13 +649,14 @@ private:
     std::unique_ptr<cl::Buffer> dummy_next_;
     std::unique_ptr<cl::Buffer> tt_a_;
     std::unique_ptr<cl::Buffer> tt_b_;
+    std::unique_ptr<cl::Buffer> parity_;
     std::unique_ptr<cl::Buffer> changed_;
     std::unique_ptr<cl::Buffer> runtime_params_;
-    std::vector<int> tt_host_;
-    int table_size_ = 0;
+    std::vector<uint32_t> tt_host_;
+    uint64_t table_size_ = 0;
     int d_star_ = 0;
     int n_dstar_ = 0;
-    std::vector<int> key_strides_;
+    std::vector<uint64_t> key_strides_;
 };
 
 #endif  // HAS_PFACES_SDK

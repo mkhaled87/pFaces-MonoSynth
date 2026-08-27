@@ -1,0 +1,5 @@
+threshold_scatter {
+    basis { MemConfig = "pfaces_rw_global"; HostDoWrite = "true"; baseTypeSize = "4"; }
+    basis_size { MemConfig = "pfaces_rw_global"; HostDoWrite = "true"; baseTypeSize = "8"; }
+    threshold_table { MemConfig = "pfaces_rw_global"; isNewOrResident = "false"; residentFuncIdx = "2"; residentFuncArgIdx = "3"; baseTypeSize = "4"; }
+}

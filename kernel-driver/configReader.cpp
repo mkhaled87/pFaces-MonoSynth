@@ -1,5 +1,26 @@
 #include "configReader.h"
 
+const char* synthesisMethodName(SynthesisMethod method) {
+	switch (method) {
+	case SynthesisMethod::CDC: return "cdc";
+	case SynthesisMethod::AUTOMATICA_SCAN: return "automatica_scan";
+	case SynthesisMethod::AUTOMATICA_THRESHOLD: return "automatica_threshold";
+	case SynthesisMethod::THRESHOLD: return "threshold";
+	case SynthesisMethod::BITMAP_REFERENCE: return "bitmap_reference";
+	case SynthesisMethod::THRESHOLD_CPU_REFERENCE: return "threshold_cpu_reference";
+	}
+	return "invalid";
+}
+
+const char* transitionBackendName(TransitionBackend backend) {
+	return backend == TransitionBackend::INLINE ? "inline" : "precomputed";
+}
+
+const char* boundarySemanticsName(BoundarySemantics semantics) {
+	return semantics == BoundarySemantics::FAVORABLE_SATURATING
+		? "favorable_saturating" : "strict_unsafe";
+}
+
 //--------
 // Define the singleton object + the class of the defaults
 //--------
@@ -814,17 +835,22 @@ defaultConfiguration::defaultConfiguration()
 	m_schema[805] = "max_basis_elements = int";
 	m_schema[806] = "record_basis_evolution = boolean";
 	m_schema[807] = "states.priorities = string";
-	m_schema[808] = "boundary_seeding = boolean";
-	m_schema[809] = "benchmark_count = int";
-	m_schema[810] = "use_threshold_table = boolean";
-	m_schema[811] = "use_tt_only = boolean";
-	m_schema[812] = "use_tt_only_gpu = boolean";
-	m_schema[813] = "use_inline_dynamics = boolean";
-	m_schema[814] = "use_prefix_sweep = boolean";
-	m_schema[815] = "threshold_d_star = int";
-	m_schema[816] = "use_bitmap_gfp = boolean";
-	m_schema[817] = "extract_basis = boolean";
-	m_schema[818] = 0;
+	m_schema[808] = "benchmark_count = int";
+	m_schema[809] = "synthesis_method = string";
+	m_schema[810] = "transition_semantics = string";
+	m_schema[811] = "transition_backend = string";
+	m_schema[812] = "threshold_d_star = int";
+	m_schema[813] = "extract_basis = boolean";
+	// Accepted only so validate_values can issue a precise migration error.
+	m_schema[814] = "use_threshold_table = string";
+	m_schema[815] = "use_tt_only = string";
+	m_schema[816] = "use_tt_only_gpu = string";
+	m_schema[817] = "use_bitmap_gfp = string";
+	m_schema[818] = "use_inline_dynamics = string";
+	m_schema[819] = "use_prefix_sweep = string";
+	m_schema[820] = "boundary_seeding = string";
+	m_schema[821] = "boundary_semantics = string";
+	m_schema[822] = 0;
 
 
 	std::stringstream m_str;
@@ -883,16 +909,22 @@ defaultConfiguration::defaultConfiguration()
 	m_str << "ode_steps = \"100\";\n";
 	m_str << "max_basis_elements = \"10000\";\n";
 	m_str << "record_basis_evolution = \"false\";\n";
-	m_str << "boundary_seeding = \"false\";\n";
 	m_str << "benchmark_count = \"10\";\n";
-	m_str << "use_threshold_table = \"true\";\n";
-	m_str << "use_tt_only = \"false\";\n";
-	m_str << "use_tt_only_gpu = \"true\";\n";
-	m_str << "use_inline_dynamics = \"false\";\n";
-	m_str << "use_prefix_sweep = \"false\";\n";
+	m_str << "synthesis_method = \"threshold\";\n";
+	m_str << "transition_semantics = \"extremal_single_successor\";\n";
+	m_str << "transition_backend = \"precomputed\";\n";
+	m_str << "boundary_semantics = \"strict_unsafe\";\n";
 	m_str << "threshold_d_star = \"-1\";\n";
-	m_str << "use_bitmap_gfp = \"false\";\n";
 	m_str << "extract_basis = \"true\";\n";
+	// Sentinels let the driver distinguish an absent legacy key from any
+	// explicitly supplied legacy value while satisfying Config4Cpp's schema.
+	m_str << "use_threshold_table = \"__mono_synth_legacy_unset__\";\n";
+	m_str << "use_tt_only = \"__mono_synth_legacy_unset__\";\n";
+	m_str << "use_tt_only_gpu = \"__mono_synth_legacy_unset__\";\n";
+	m_str << "use_bitmap_gfp = \"__mono_synth_legacy_unset__\";\n";
+	m_str << "use_inline_dynamics = \"__mono_synth_legacy_unset__\";\n";
+	m_str << "use_prefix_sweep = \"__mono_synth_legacy_unset__\";\n";
+	m_str << "boundary_seeding = \"__mono_synth_legacy_unset__\";\n";
 	m_str << "\n";
 	m_str << "\n";
 	m_str << "# State/Input sets\n";
@@ -1485,7 +1517,7 @@ const char* defaultConfiguration::getDefaults() {
 }
 void defaultConfiguration::getSchema(const char**& schema, int& schemaSize) {
 	schema = s_singleton.m_schema;
-	schemaSize = 800;
+	schemaSize = 822;
 }
 const char** defaultConfiguration::getSchema(){
 	return s_singleton.m_schema;
@@ -1573,51 +1605,58 @@ void configReader::load_values() {
 			m_record_basis_evolution = false;
 		}
 
-		try {
-			m_boundary_seeding = m_spConfigObject->readConfigValueBool("boundary_seeding");
-		} catch (...) {
-			m_boundary_seeding = false;
+		m_legacy_solver_key.clear();
+		const char* legacy_keys[] = {
+			"use_threshold_table", "use_tt_only", "use_tt_only_gpu",
+			"use_bitmap_gfp", "use_inline_dynamics", "use_prefix_sweep",
+			"boundary_seeding"
+		};
+		for (const char* key : legacy_keys) {
+			const std::string value =
+				m_spConfigObject->readConfigValueString(key);
+			if (value != "__mono_synth_legacy_unset__" &&
+			    m_legacy_solver_key.empty())
+				m_legacy_solver_key = key;
 		}
 
-		try {
-			m_use_threshold_table = m_spConfigObject->readConfigValueBool("use_threshold_table");
-		} catch (...) {
-			m_use_threshold_table = true;
-		}
+		std::string method = "threshold";
+		try { method = m_spConfigObject->readConfigValueString("synthesis_method"); }
+		catch (...) {}
+		if (method == "cdc") m_synthesis_method = SynthesisMethod::CDC;
+		else if (method == "automatica_scan") m_synthesis_method = SynthesisMethod::AUTOMATICA_SCAN;
+		else if (method == "automatica_threshold") m_synthesis_method = SynthesisMethod::AUTOMATICA_THRESHOLD;
+		else if (method == "threshold") m_synthesis_method = SynthesisMethod::THRESHOLD;
+		else if (method == "bitmap_reference") m_synthesis_method = SynthesisMethod::BITMAP_REFERENCE;
+		else if (method == "threshold_cpu_reference") m_synthesis_method = SynthesisMethod::THRESHOLD_CPU_REFERENCE;
+		else throw pfacesConfigurationException(
+			"synthesis_method must be cdc, automatica_scan, automatica_threshold, "
+			"threshold, bitmap_reference, or threshold_cpu_reference");
 
 		try {
-			m_use_tt_only = m_spConfigObject->readConfigValueBool("use_tt_only");
+			m_transition_semantics = m_spConfigObject->readConfigValueString("transition_semantics");
 		} catch (...) {
-			m_use_tt_only = false;
+			m_transition_semantics = "extremal_single_successor";
 		}
 
-		try {
-			m_use_tt_only_gpu = m_spConfigObject->readConfigValueBool("use_tt_only_gpu");
-		} catch (...) {
-			m_use_tt_only_gpu = true;  // default: GPU when use_tt_only is set
-		}
+		std::string backend = "precomputed";
+		try { backend = m_spConfigObject->readConfigValueString("transition_backend"); }
+		catch (...) {}
+		if (backend == "precomputed") m_transition_backend = TransitionBackend::PRECOMPUTED;
+		else if (backend == "inline") m_transition_backend = TransitionBackend::INLINE;
+		else throw pfacesConfigurationException(
+			"transition_backend must be precomputed or inline");
 
+		std::string boundary_semantics = "strict_unsafe";
 		try {
-			m_use_inline_dynamics = m_spConfigObject->readConfigValueBool("use_inline_dynamics");
-		} catch (...) {
-			m_use_inline_dynamics = false;
-		}
-
-		try {
-			m_use_prefix_sweep = m_spConfigObject->readConfigValueBool("use_prefix_sweep");
-		} catch (...) {
-			// Off by default: the monotone boundary handling assumption
-			// (Assumption 1 in the paper) makes the prefix-max sweep a
-			// no-op for well-posed monotone systems, so we save the
-			// additional O(N^(d-1)) per-iteration work.
-			m_use_prefix_sweep = false;
-		}
-
-		try {
-			m_use_bitmap_gfp = m_spConfigObject->readConfigValueBool("use_bitmap_gfp");
-		} catch (...) {
-			m_use_bitmap_gfp = false;
-		}
+			boundary_semantics =
+				m_spConfigObject->readConfigValueString("boundary_semantics");
+		} catch (...) {}
+		if (boundary_semantics == "strict_unsafe")
+			m_boundary_semantics = BoundarySemantics::STRICT_UNSAFE;
+		else if (boundary_semantics == "favorable_saturating")
+			m_boundary_semantics = BoundarySemantics::FAVORABLE_SATURATING;
+		else throw pfacesConfigurationException(
+			"boundary_semantics must be strict_unsafe or favorable_saturating");
 
 		try {
 			m_extract_basis = m_spConfigObject->readConfigValueBool("extract_basis");
@@ -1684,11 +1723,11 @@ void configReader::load_values() {
 			m_disturbdim = 1; // Default
 		}
 		
-		try {
-			m_max_basis_elements = m_spConfigObject->readConfigValueInt("max_basis_elements");
-		} catch (...) {
-			m_max_basis_elements = 2000;
-		}
+		const int max_basis_elements =
+			m_spConfigObject->readConfigValueInt("max_basis_elements");
+		if (max_basis_elements <= 0)
+			throw pfacesConfigurationException("max_basis_elements must be positive");
+		m_max_basis_elements = static_cast<size_t>(max_basis_elements);
 
 		try {
 			m_benchmark_count = m_spConfigObject->readConfigValueInt("benchmark_count");
@@ -1791,8 +1830,21 @@ int configReader::validate_values() {
 		ret = VALIDATE_RESULT_FAILED;
 	}
 
-	if (m_use_tt_only && m_use_bitmap_gfp) {
-		sserrors << "\t-use_tt_only and use_bitmap_gfp are mutually exclusive GFP modes." << std::endl;
+	if (!m_legacy_solver_key.empty()) {
+		sserrors << "\t-Legacy solver key '" << m_legacy_solver_key
+		         << "' is not supported. Replace all legacy solver booleans with "
+		            "synthesis_method and transition_backend." << std::endl;
+		ret = VALIDATE_RESULT_FAILED;
+	}
+	if (m_transition_semantics != "extremal_single_successor") {
+		sserrors << "\t-transition_semantics must be extremal_single_successor in this revision." << std::endl;
+		ret = VALIDATE_RESULT_FAILED;
+	}
+	const bool supports_inline =
+		m_synthesis_method == SynthesisMethod::THRESHOLD ||
+		m_synthesis_method == SynthesisMethod::BITMAP_REFERENCE;
+	if (m_transition_backend == TransitionBackend::INLINE && !supports_inline) {
+		sserrors << "\t-transition_backend=inline is allowed only for threshold and bitmap_reference." << std::endl;
 		ret = VALIDATE_RESULT_FAILED;
 	}
 

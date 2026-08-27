@@ -8,9 +8,10 @@ The method stores one threshold height per grid column along
 `threshold_d_star`, so safe-set membership is an `O(1)` lookup with
 `O(N^(d-1))` storage instead of full-grid storage or basis scans.
 
-In the paper experiments, 3D grids with `10^10` cells
-synthesize in 141-221 ms, `10^14` cells complete within 99 s, and online
-left-turn control stays below a 100 ms cycle budget.
+The repository exposes four production solvers with one explicit configuration
+key: literal CDC, Automatica with scan membership, Automatica with threshold
+membership, and the proposed column-wise threshold GFP. Reference solvers are
+kept separate from paper comparisons.
 
 ## Preview
 
@@ -97,17 +98,16 @@ MONOSAFE_ACC_ONLY=1 PFACES_DEVICE_CLASS=C ./scripts/run_e2e.sh --mode docker
 
 ## Synthesis And Visualization
 
-Run standalone threshold synthesis and render the safe-set evolution:
+Run standalone threshold synthesis:
 
 ```bash
 ./run_threshold_synthesis.sh --cfg examples/acc/acc.cfg --mode threshold --device-class G --device 1
 ```
 
-The script runs pFaces, records `threshold_evolution.csv`, and writes
-`examples/acc/threshold_evolution.mp4`. It also supports basis-mode rendering:
+The script defaults to synthesis only. The immediate CDC schedule is selected by:
 
 ```bash
-./run_threshold_synthesis.sh --cfg examples/acc/acc.cfg --mode basis --device-class G --device 1
+./run_threshold_synthesis.sh --cfg examples/acc/acc.cfg --mode cdc --device-class G --device 1
 ```
 
 CPU execution is also supported for ACC synthesis:
@@ -159,14 +159,15 @@ The RT configs are data-driven. Edit `states.eta` and `threshold_d_star` in:
 - `examples/turn_ego_first/turn_ego_first_threshold_rt.cfg`
 - `examples/two_oncoming/two_oncoming_threshold_rt.cfg`
 
-The shipped RT phase configs use TT-only GPU synthesis, inline dynamics, no
-precomputed transition table, and no basis extraction. On the verified RTX 5090
+The tracked paper/RT configurations explicitly select
+`boundary_semantics=favorable_saturating`. The RT adapter selects
+`synthesis_method=threshold` with inline dynamics at launch. On the verified RTX 5090
 machine, the default 10.1B-cell phase tables stayed below 100 ms per online
 synthesis.
 
 ## Bitmap GFP
 
-Validate bitmap GFP against TT-only on ACC:
+Validate the explicit bitmap and CPU-threshold reference modes on ACC:
 
 ```bash
 python3 tools/check_bitmap_gfp_acc.py
@@ -178,8 +179,38 @@ Benchmark ACC at large bitmap/threshold grids:
 python3 tools/benchmark_bitmap_gfp_acc.py --sizes 1e8 1e9
 ```
 
-The broader paper-scaling runner is:
+Run the fair four-method benchmark (one warm-up and five measured runs):
 
 ```bash
-python3 tools/run_paper_experiments_all_methods.py --help
+python3 tools/run_four_method_benchmark.py --help
 ```
+
+Add `--include-references` to record the bitmap and CPU-threshold reference
+implementations under the same transition cache, repetitions, timing boundary,
+and exact-output checks. They remain labeled reference-only in the summary.
+`--experiment-config PATH` loads the method subset, state resolution, device,
+warm-up count, measured-run count, timeout, and output directory from one JSON
+file; see `tools/benchmark_configs/acc_large_poc.json`.
+
+## Solver configuration
+
+New or generated configurations select exactly one method:
+
+```text
+synthesis_method = "threshold";
+transition_semantics = "extremal_single_successor";
+transition_backend = "precomputed";
+boundary_semantics = "favorable_saturating";
+threshold_d_star = "-1";
+```
+
+Production values are `cdc`, `automatica_scan`, `automatica_threshold`, and
+`threshold`. Reference-only values are `bitmap_reference` and
+`threshold_cpu_reference`. Legacy `use_*` solver booleans are rejected rather
+than translated implicitly. Benchmark and RT launchers generate or apply
+explicit enum-based overrides. Fair four-way timing uses `precomputed` for every
+method; `inline` is reserved for threshold RT/scalability runs and the bitmap
+reference. The CPU-threshold reference requires precomputed successors.
+`boundary_semantics=favorable_saturating` projects favorable per-axis exits to
+the corresponding boundary and maps any unfavorable exit to the unsafe sink.
+Use `strict_unsafe` only when every domain exit is intentionally unsafe.

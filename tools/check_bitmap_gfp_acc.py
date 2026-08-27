@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Check ACC 3D bitmap-GFP output against TT-only output exactly."""
+"""Check the two explicit reference modes against canonical threshold bytes."""
 
 from __future__ import annotations
 
-import csv
+import argparse
+import hashlib
 import os
 import shlex
 import subprocess
@@ -26,35 +27,28 @@ def run(cmd: list[str], cwd: Path) -> str:
     return proc.stdout
 
 
-def parse_tt_threshold(path: Path) -> dict[int, int]:
-    final_iter = -1
-    rows: list[tuple[int, int, int]] = []
-    with path.open(newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            iteration = int(row["iteration"])
-            key = int(row["key_flat"])
-            tau = int(row["tau"])
-            rows.append((iteration, key, tau))
-            final_iter = max(final_iter, iteration)
-    return {key: tau for iteration, key, tau in rows if iteration == final_iter}
-
-
-def parse_bitmap_threshold(path: Path) -> dict[int, int]:
-    with path.open(newline="") as f:
-        reader = csv.DictReader(f)
-        return {int(row["key_flat"]): int(row["tau"]) for row in reader}
-
-
 def main() -> int:
-    root = Path(__file__).resolve().parents[1]
-    acc_dir = root / "examples" / "acc"
-    kernel_pack = root / "kernel-pack"
-    device = os.environ.get("PFACES_GPU_DEVICE", "1")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--cfg", type=Path,
+        default=Path(__file__).resolve().parents[1] / "examples" / "acc" / "acc.cfg",
+    )
+    parser.add_argument("--device", default=os.environ.get("PFACES_GPU_DEVICE", "1"))
+    parser.add_argument("--output-dir", type=Path)
+    args = parser.parse_args()
 
-    for name in ("threshold_evolution.csv", "bitmap_threshold_final.csv", "iteration_stats.csv"):
+    root = Path(__file__).resolve().parents[1]
+    cfg = args.cfg.resolve()
+    output_dir = (args.output_dir or cfg.parent).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    kernel_pack = root / "kernel-pack"
+    device = args.device
+
+    project = "mono_synth_reference_check"
+    output = output_dir / f"{project}.threshold.u32.bin"
+    for name in (output.name,):
         try:
-            (acc_dir / name).unlink()
+            (output_dir / name).unlink()
         except FileNotFoundError:
             pass
 
@@ -64,58 +58,56 @@ def main() -> int:
         "-k",
         f"mono_synth.gpu@{kernel_pack}",
         "-cfg",
-        "./acc.cfg",
+        str(cfg),
         "-d",
         device,
         "-p",
         "-v1",
     ]
+    legacy_unset = ",".join(
+        f"{key}=__mono_synth_legacy_unset__"
+        for key in (
+            "use_threshold_table", "use_tt_only", "use_tt_only_gpu",
+            "use_bitmap_gfp", "use_inline_dynamics", "use_prefix_sweep",
+            "boundary_seeding",
+        )
+    )
 
-    print("[check] Running TT-only ACC...")
+    print("[check] Running CPU threshold reference...")
     run(
         base
         + [
             "-co",
-            "use_tt_only=true,use_bitmap_gfp=false,benchmark_count=1,"
-            "record_basis_evolution=true,use_prefix_sweep=false",
+            f"project_name={project},synthesis_method=threshold_cpu_reference,"
+            "transition_semantics=extremal_single_successor,"
+            "transition_backend=precomputed,boundary_semantics=favorable_saturating,"
+            "benchmark_count=1,save_controller=true,"
+            f"{legacy_unset}",
         ],
-        cwd=acc_dir,
+        cwd=output_dir,
     )
-    tt = parse_tt_threshold(acc_dir / "threshold_evolution.csv")
+    threshold_bytes = output.read_bytes()
 
     print("[check] Running bitmap-GFP ACC...")
     run(
         base
         + [
             "-co",
-            "use_tt_only=false,use_bitmap_gfp=true,benchmark_count=1,"
-            "record_basis_evolution=true",
+            f"project_name={project},synthesis_method=bitmap_reference,"
+            "transition_semantics=extremal_single_successor,"
+            "transition_backend=precomputed,boundary_semantics=favorable_saturating,"
+            "benchmark_count=1,save_controller=true,"
+            f"{legacy_unset}",
         ],
-        cwd=acc_dir,
+        cwd=output_dir,
     )
-    bitmap = parse_bitmap_threshold(acc_dir / "bitmap_threshold_final.csv")
-
-    keys = set(tt) | set(bitmap)
-    mismatches = [
-        (k, tt.get(k, 0), bitmap.get(k, 0))
-        for k in sorted(keys)
-        if tt.get(k, 0) != bitmap.get(k, 0)
-    ]
-
-    tt_safe = sum(tt.values())
-    bitmap_safe = sum(bitmap.values())
-    print(f"[check] TT safe cells:     {tt_safe}")
-    print(f"[check] Bitmap safe cells: {bitmap_safe}")
-    print(f"[check] Compared columns:  {len(keys)}")
-    print(f"[check] Mismatches:        {len(mismatches)}")
-
-    if mismatches:
-        print("[check] First mismatches:")
-        for key, tt_tau, bm_tau in mismatches[:20]:
-            print(f"  key={key}: tt={tt_tau}, bitmap={bm_tau}")
+    bitmap_bytes = output.read_bytes()
+    print(f"[check] threshold sha256: {hashlib.sha256(threshold_bytes).hexdigest()}")
+    print(f"[check] bitmap sha256:    {hashlib.sha256(bitmap_bytes).hexdigest()}")
+    if threshold_bytes != bitmap_bytes:
+        print("[check] FAIL: canonical outputs differ")
         return 1
-
-    print("[check] PASS: bitmap GFP exactly matches TT-only on ACC 3D.")
+    print("[check] PASS: reference modes have identical canonical outputs.")
     return 0
 
 

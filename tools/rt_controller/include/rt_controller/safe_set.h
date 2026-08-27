@@ -85,8 +85,10 @@ public:
      * @param key_strides  Per-dim strides for computing key_flat (size = n_dim,
      *                     d_star entry is ignored).
      */
-    void set_threshold_table(const int* data, int table_size, int d_star,
-                             const std::vector<int>& key_strides) {
+    void set_threshold_table(const uint32_t* data, uint64_t table_size, int d_star,
+                             const std::vector<uint64_t>& key_strides) {
+        if (table_size > std::numeric_limits<size_t>::max())
+            throw std::overflow_error("threshold table does not fit size_t");
         tt_data_.assign(data, data + table_size);
         tt_size_ = table_size;
         tt_d_star_ = d_star;
@@ -94,7 +96,7 @@ public:
         has_tt_ = true;
         // Count safe cells for statistics
         tt_safe_cells_ = 0;
-        for (int i = 0; i < table_size; ++i) tt_safe_cells_ += data[i];
+        for (uint64_t i = 0; i < table_size; ++i) tt_safe_cells_ += data[i];
         last_build_ms_ = 0.0;
     }
 
@@ -247,11 +249,14 @@ public:
             if (grid_.sizes[d] > grid_.sizes[tt_d_star_]) tt_d_star_ = d;
         }
         tt_key_strides_.resize(n_dim, 0);
-        int tbl_stride = 1;
+        uint64_t tbl_stride = 1;
         for (int d = 0; d < n_dim; ++d) {
             if (d == tt_d_star_) continue;
             tt_key_strides_[d] = tbl_stride;
-            tbl_stride *= grid_.sizes[d];
+            if (grid_.sizes[d] > 0 && tbl_stride > std::numeric_limits<uint64_t>::max() /
+                                                   static_cast<uint64_t>(grid_.sizes[d]))
+                throw std::overflow_error("threshold-table size overflow");
+            tbl_stride *= static_cast<uint64_t>(grid_.sizes[d]);
         }
         tt_size_ = tbl_stride;
         tt_data_.assign(tt_size_, 0);
@@ -260,15 +265,16 @@ public:
             if (!bitmap[flat]) continue;
             int idx[MAX_DIM];
             grid_.unflatten(flat, idx);
-            int key_flat = 0;
+            uint64_t key_flat = 0;
             for (int d = 0; d < n_dim; ++d) {
                 if (d == tt_d_star_) continue;
                 key_flat += idx[d] * tt_key_strides_[d];
             }
-            tt_data_[key_flat] = std::max(tt_data_[key_flat], idx[tt_d_star_] + 1);
+            tt_data_[key_flat] = std::max(tt_data_[key_flat],
+                                          static_cast<uint32_t>(idx[tt_d_star_] + 1));
         }
         tt_safe_cells_ = 0;
-        for (int i = 0; i < tt_size_; ++i) tt_safe_cells_ += tt_data_[i];
+        for (uint64_t i = 0; i < tt_size_; ++i) tt_safe_cells_ += tt_data_[i];
         has_tt_ = true;
 
         auto t1 = std::chrono::high_resolution_clock::now();
@@ -288,27 +294,37 @@ public:
             return (bitmap_words_[flat >> 5] & (uint32_t(1) << (flat & 31))) != 0;
         }
         if (!has_tt_) return false;
-        int key_flat = 0;
+        uint64_t key_flat = 0;
         for (int d = 0; d < grid_.n_dim; ++d) {
             if (d == tt_d_star_) continue;
             key_flat += idx[d] * tt_key_strides_[d];
         }
-        int thresh = (key_flat >= 0 && key_flat < tt_size_) ? tt_data_[key_flat] : 0;
+        uint32_t thresh = key_flat < tt_size_ ? tt_data_[key_flat] : 0;
         return (thresh > 0 && idx[tt_d_star_] < thresh);
     }
 
-    /// Continuous state → grid index, conservatively rounded toward the
-    /// less-safe direction using the configured monotonicity priorities.
-    inline void state_to_grid_conservative(const double* x, int* idx) const {
+    /// Continuous state → grid index under favorable-saturating semantics.
+    /// Favorable exits project to the boundary; unfavorable exits return false.
+    /// In-domain values are rounded toward the less-safe grid direction.
+    inline bool state_to_grid_conservative(const double* x, int* idx,
+                                           int ignored_dim = -1) const {
+        constexpr double exit_tol = 1e-2;
         for (int d = 0; d < grid_.n_dim; ++d) {
-            double clamped = std::max(grid_.lb[d], std::min(x[d], grid_.ub[d]));
             bool max_is_good = (priorities_.empty() || priorities_[d] == 0);
+            if (d != ignored_dim) {
+                bool unfavorable_exit = max_is_good
+                    ? x[d] < grid_.lb[d] - exit_tol
+                    : x[d] > grid_.ub[d] + exit_tol;
+                if (unfavorable_exit) return false;
+            }
+            double clamped = std::max(grid_.lb[d], std::min(x[d], grid_.ub[d]));
             double q = max_is_good
                 ? (grid_.ub[d] - clamped) / grid_.eta[d]
                 : (clamped - grid_.lb[d]) / grid_.eta[d];
             int id = static_cast<int>(std::ceil(q - 1e-9));
             idx[d] = std::max(0, std::min(id, grid_.sizes[d] - 1));
         }
+        return true;
     }
 
     /// Check if a continuous state is in the safe set.  O(1).
@@ -338,7 +354,7 @@ public:
             return a_ok && b_ok;
         }
         int idx[MAX_DIM];
-        state_to_grid_conservative(x, idx);
+        if (!state_to_grid_conservative(x, idx)) return false;
         return is_safe_grid(idx);
     }
 
@@ -429,7 +445,9 @@ public:
 
         // Map the reference state to grid indices conservatively
         int idx[MAX_DIM] = {};
-        state_to_grid_conservative(state, idx);
+        if (!state_to_grid_conservative(state, idx, dim))
+            return {std::numeric_limits<double>::quiet_NaN(),
+                    std::numeric_limits<double>::quiet_NaN()};
 
         // Scan along dim using threshold table
         double lo = std::numeric_limits<double>::quiet_NaN();
@@ -566,10 +584,10 @@ private:
     bool                  has_bitmap_ = false;
     int64_t               bitmap_safe_cells_ = 0;
     bool                  has_tt_ = false;
-    std::vector<int>      tt_data_;
-    int                   tt_size_ = 0;
+    std::vector<uint32_t> tt_data_;
+    uint64_t              tt_size_ = 0;
     int                   tt_d_star_ = 0;
-    std::vector<int>      tt_key_strides_;
+    std::vector<uint64_t> tt_key_strides_;
     int64_t               tt_safe_cells_ = 0;
 };
 

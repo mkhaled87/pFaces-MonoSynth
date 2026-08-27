@@ -40,18 +40,22 @@ inline void rk4_step(const float* x, const float* u, const float* w,
         
         for (int i = 0; i < @@STATE_DIM@@; ++i) 
             x_temp[i] = x_curr[i] + h * 0.5f * k1[i];
+        apply_state_constraints(x_temp);
         ode_rhs(x_temp, u, w, k2, rt_params);
         
         for (int i = 0; i < @@STATE_DIM@@; ++i)
             x_temp[i] = x_curr[i] + h * 0.5f * k2[i];
+        apply_state_constraints(x_temp);
         ode_rhs(x_temp, u, w, k3, rt_params);
         
         for (int i = 0; i < @@STATE_DIM@@; ++i)
             x_temp[i] = x_curr[i] + h * k3[i];
+        apply_state_constraints(x_temp);
         ode_rhs(x_temp, u, w, k4, rt_params);
         
         for (int i = 0; i < @@STATE_DIM@@; ++i)
             x_curr[i] += (h / 6.0f) * (k1[i] + 2.0f*k2[i] + 2.0f*k3[i] + k4[i]);
+        apply_state_constraints(x_curr);
     }
     
     for (int i = 0; i < @@STATE_DIM@@; ++i) {
@@ -64,7 +68,7 @@ inline void rk4_step(const float* x, const float* u, const float* w,
 // INDEX MAPPING: 1-based internal monotone coordinates, dim 0 fastest
 // ============================================================================
 
-inline void unflatten_index(int flat_idx, const unsigned int* dims, int* idx) {
+inline void unflatten_index(ulong flat_idx, const uint* dims, int* idx) {
     for (int i = 0; i < @@STATE_DIM@@; ++i) {
         idx[i] = (flat_idx % dims[i]) + 1;
         flat_idx /= dims[i];
@@ -96,7 +100,20 @@ inline bool state_to_idx(const float* x,
     const float tol = 1e-2f;
     
     for (int i = 0; i < @@STATE_DIM@@; ++i) {
+#if @@SATURATE_FAVORABLE_EXITS@@
+        /*
+         * Internal coordinate 1 is the favorable end of every ordered axis.
+         * Project a favorable continuous exit to that boundary, preserving
+         * all other coordinates.  Any unfavorable exit goes to the single
+         * unsafe sink (reported by returning false).
+         */
+        const bool unfavorable_exit =
+            (x_priority[i] == 0 && x[i] < x_min[i] - tol) ||
+            (x_priority[i] == 1 && x[i] > x_max[i] + tol);
+        if (unfavorable_exit) {
+#else
         if (x[i] < x_min[i] - tol || x[i] > x_max[i] + tol) {
+#endif
             for (int j = 0; j < @@STATE_DIM@@; ++j) idx[j] = -1;
             return false;
         }
@@ -118,10 +135,10 @@ inline bool state_to_idx(const float* x,
 // ============================================================================
 
 __kernel void precompute_transitions(
-    __global unsigned int* next_state_table,
+    __global ulong* next_state_table,
     __global const float* runtime_params
 ) {
-    int gid = get_global_id(0);
+    const ulong gid = (ulong)get_global_id(0);
     
     float rt_params[4];
     rt_params[0] = runtime_params[0];
@@ -135,9 +152,9 @@ __kernel void precompute_transitions(
     const int x_priority[@@STATE_DIM@@] = @@X_PRIORITY_ARRAY@@;
     
     const int N_grid[@@STATE_DIM@@] = @@GRID_SIZES_ARRAY@@;
-    unsigned int x_numCells[@@STATE_DIM@@];
+    uint x_numCells[@@STATE_DIM@@];
     for (int i = 0; i < @@STATE_DIM@@; ++i) {
-        x_numCells[i] = (unsigned int)N_grid[i];
+        x_numCells[i] = (uint)N_grid[i];
     }
     
     int x_idx[@@STATE_DIM@@];
@@ -157,14 +174,14 @@ __kernel void precompute_transitions(
     state_to_idx(x_plus, x_min, x_max, x_res, x_priority, x_numCells, x_plus_idx);
     
     if (x_plus_idx[0] == -1) {
-        next_state_table[gid] = 0xFFFFFFFFu;
+        next_state_table[gid] = ULONG_MAX;
         return;
     }
-    unsigned int flat_succ = 0;
-    unsigned int stride = 1;
+    ulong flat_succ = 0;
+    ulong stride = 1;
     for (int i = 0; i < @@STATE_DIM@@; ++i) {
-        flat_succ += (unsigned int)(x_plus_idx[i] - 1) * stride;
-        stride *= x_numCells[i];
+        flat_succ += (ulong)(x_plus_idx[i] - 1) * stride;
+        stride *= (ulong)x_numCells[i];
     }
     next_state_table[gid] = flat_succ;
 }
