@@ -80,7 +80,7 @@ RUN_POLICY = {
     "device": "1",
     "pfaces": "pfaces",
     "warmup_runs": 1,
-    "measured_runs": 5,
+    "measured_runs": 1,
     "verbose": 1,
     "resume": True,
     "retry_non_ok_on_resume": False,

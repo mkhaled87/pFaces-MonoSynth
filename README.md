@@ -8,10 +8,12 @@ The method stores one threshold height per grid column along
 `threshold_d_star`, so safe-set membership is an `O(1)` lookup with
 `O(N^(d-1))` storage instead of full-grid storage or basis scans.
 
-The repository exposes four production solvers with one explicit configuration
-key: literal CDC, Automatica with scan membership, Automatica with threshold
-membership, and the proposed column-wise threshold GFP. Reference solvers are
-kept separate from paper comparisons.
+The repository exposes five production solvers with one explicit configuration
+key: CDC scan, CDC with threshold indexing, Automatica with scan membership,
+Automatica with threshold membership, and the proposed column-wise threshold
+GFP. The full paper matrix reports both CDC-threshold execution backends and
+the bitmap reference, giving seven visible implementation rows. CPU threshold
+remains an optional correctness reference.
 
 ## Preview
 
@@ -66,6 +68,104 @@ Build the pFaces kernel driver and list the GPU id used by the pFaces CLI:
 sh build.sh
 pfaces -G -l
 ```
+
+## Reproduce the Paper Experiments
+
+The paper release is intended for Linux with an NVIDIA OpenCL device and an
+external pFaces installation. Clone the release branch, export the SDK path,
+and build the kernel driver:
+
+```bash
+git clone --branch paper-experiments \
+  https://github.com/mkhaled87/pFaces-MonoSynth.git
+cd pFaces-MonoSynth
+
+export PFACES_SDK_ROOT=/path/to/pfaces-sdk
+export PATH=/path/to/pfaces/bin:$PATH
+
+sh build.sh
+pfaces -G -l
+```
+
+Replace device `0` below with the NVIDIA device index reported by pFaces.
+Inspect the complete 126-row experiment plan without launching a solver:
+
+```bash
+python3 tools/run_full_paper_matrix.py \
+  --dry-run \
+  --device 0 \
+  --output /tmp/paper-matrix-plan
+```
+
+Run a coarse ACC smoke test before starting the full matrix:
+
+```bash
+python3 tools/run_solver_benchmark.py \
+  examples/acc/acc.cfg \
+  --methods threshold,bitmap_reference \
+  --state-eta 4,2,2 \
+  --device 0 \
+  --warmups 0 \
+  --repetitions 1 \
+  --output tools/benchmark_results/acc_smoke
+```
+
+The default full-matrix protocol performs one warm-up and one measured run:
+
+```bash
+python3 tools/run_full_paper_matrix.py \
+  --pfaces pfaces \
+  --device 0 \
+  --warmups 1 \
+  --repetitions 1
+```
+
+For final paper statistics, collect five warmed measurements:
+
+```bash
+python3 tools/run_full_paper_matrix.py \
+  --pfaces pfaces \
+  --device 0 \
+  --warmups 1 \
+  --repetitions 5 \
+  --output tools/benchmark_results/full_paper_five_runs
+```
+
+Runs checkpoint after every method and resume by default. Reuse exactly the
+same command and output directory to continue an interrupted matrix. Generated
+configurations, logs, raw measurements, validation metadata, and Markdown and
+LaTeX tables are written below `tools/benchmark_results/` and are ignored by
+Git. See [tools/README.md](tools/README.md) for the output schema and validation
+rules.
+
+The nominal labels $10^8$--$10^{14}$ identify paper-scale cases. The generated
+`run_plan.csv` records the exact grid widths, actual cell count, threshold-table
+size, selected transition backend, and any explicit resource skip for every
+row. Methods requiring a precomputed successor table are not silently changed
+to inline dynamics; threshold and bitmap rows may use their supported inline
+backend above the configured precomputation cap.
+
+### Changes relative to the submitted implementation
+
+- The benchmark now separates CDC scan, host and GPU CDC-threshold,
+  scan-based and threshold-indexed Automatica, threshold GFP, and bitmap GFP.
+- CDC uses frozen pass snapshots with immediate committed basis updates;
+  Automatica variants share one frontier state machine and differ only in
+  fixed-target membership representation.
+- Successor indices are 64-bit, and basis operations use a canonical checked
+  `BasisStore` rather than fixed coordinate buckets.
+- Favorable domain exits use explicit saturating boundary semantics while
+  unfavorable exits map to an unsafe sink. Constrained Runge--Kutta stages are
+  projected before reuse so the generated transition relation preserves the
+  required order.
+- Benchmarks report transition construction, membership, representation,
+  threshold maintenance, basis/frontier updates, total solver time, and
+  allocated solver buffers separately.
+- Complete canonical outputs, safe-cell counts, algorithm-specific counters,
+  and transition monotonicity are checked before a result is accepted. Round
+  counts remain algorithm-specific and are not treated as equivalent work.
+- The online controller demonstration is safety-informed MPPI; it does not
+  claim a formal closed-loop safety guarantee.
 
 ## Unified End-To-End Runner
 

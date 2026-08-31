@@ -29,6 +29,8 @@ def main() -> int:
         "turn_ego": (8, 9, 10, 12, 14),
         "turn_oncoming": (8, 9, 10, 12, 14),
     }
+    assert matrix.RUN_POLICY["warmup_runs"] == 1
+    assert matrix.RUN_POLICY["measured_runs"] == 1
 
     acc = matrix.PAPER_EXPERIMENTS[0]
     acc_1e8 = matrix.experiment_widths(acc, 8, 3)
@@ -52,6 +54,12 @@ def main() -> int:
             rows = list(csv.DictReader(stream))
         assert len(rows) == 126
         assert len({(row["case"], row["run_method"]) for row in rows}) == 126
+        for row in rows:
+            widths = [int(value) for value in row["widths"].split("x")]
+            assert widths
+            assert matrix.product(widths) == int(row["actual_cells"])
+            assert int(row["actual_cells"]) > 0
+            assert row["transition_backend"] in {"precomputed", "inline", "skip"}
         markdown = (output / "full_matrix_table.md").read_text()
         latex = (output / "full_matrix_table.tex").read_text()
         assert markdown.count("| ACC |") == 35

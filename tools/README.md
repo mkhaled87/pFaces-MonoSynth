@@ -1,4 +1,4 @@
-# pFaces-MonoSynth Video Generation Tool
+# pFaces-MonoSynth Benchmark and Visualization Tools
 
 ## Solver benchmark
 
@@ -60,10 +60,22 @@ ACC-5D, Turn-Ego, and Turn-Oncoming scales with these seven implementations:
 CDC, host and GPU CDC-threshold, both Automatica membership representations,
 threshold GFP, and bitmap GFP.
 
+The exact runner keys are:
+
+```text
+cdc
+cdc_threshold_host
+cdc_threshold_gpu
+automatica_scan
+automatica_threshold
+threshold
+bitmap_reference
+```
+
 ```bash
 python3 tools/run_full_paper_matrix.py \
   --pfaces /path/to/pfaces \
-  --device 1
+  --device 0
 ```
 
 The experiment matrix, method list, repetition policy, timeouts, and resource
@@ -72,6 +84,11 @@ read-only; all derived configurations and results go to
 `tools/benchmark_results/full_paper_seven_methods/`. The run checkpoints after
 every method and resumes by default. Use a different `--output` directory after
 changing any experiment definition.
+
+The default is one warm-up and one measured run. This is useful for validating
+a new machine. Use `--warmups 1 --repetitions 5` and a fresh output directory
+for final median timings. The solvers are deterministic; repetitions measure
+timing variability rather than different random seeds.
 
 The runner creates `run_plan.csv`, raw `all_runs.csv`, a combined summary CSV,
 one large Markdown table, a landscape LaTeX longtable, per-run logs, a manifest
@@ -82,16 +99,41 @@ configured caps remain visible as `skipped_resource`; threshold and bitmap use
 inline dynamics beyond the precomputation cap. Thus large-scale rows never
 silently compare different transition backends.
 
+`run_plan.csv` records the nominal scale, exact grid widths, actual cell count,
+threshold entries, designated axis, transition backend, and estimated major
+buffer sizes for every row. The nominal labels such as `1e14` are therefore not
+substitutes for the generated geometry. Timing summaries separate shared
+transition construction, membership, representation construction, threshold
+maintenance, basis/frontier updates, total fixed-point time, wall time, and
+allocated solver buffers.
+
+A case is accepted only when successful methods agree on complete canonical
+threshold bytes, SHA-256, and safe-cell count. CDC scan and both CDC-threshold
+backends must also agree on passes, mutations, and pass hashes; both Automatica
+variants must agree on rounds and frontier batches; synchronous methods must
+agree on GFP rounds. Precomputed transition caches receive geometry and file
+size checks and, below the configured audit cap, an exhaustive adjacent-state
+monotonicity check.
+
 Inspect the complete plan without launching pFaces:
 
 ```bash
 python3 tools/run_full_paper_matrix.py --dry-run --output /tmp/paper-matrix-plan
 ```
 
+Resume an interrupted run by repeating the identical command and output path.
+The manifest fingerprint prevents accidental resume after changing the code,
+matrix, device, repetition policy, or resource limits. Use `--no-resume` only
+when targeting a new, empty output directory.
+
 `benchmark_bitmap_gfp_acc.py` and `check_bitmap_gfp_acc.py` remain focused tools
 for the explicit `bitmap_reference` and `threshold_cpu_reference` modes.
 The equality checker also accepts a custom monotone fixture through
 `--cfg PATH --output-dir PATH`.
+
+`threshold_cpu_reference` is intentionally omitted from the default visible
+paper matrix. Run `run_solver_benchmark.py --include-references` when an
+independent CPU threshold oracle is desired on a manageable grid.
 
 ## Video generation
 
