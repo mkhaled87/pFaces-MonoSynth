@@ -21,6 +21,6 @@ fi
 # building ...
 mkdir -p build
 cd build
-cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE
+cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DBUILD_TESTING=ON
 cmake --build . --config $BUILD_TYPE
 cd ..
