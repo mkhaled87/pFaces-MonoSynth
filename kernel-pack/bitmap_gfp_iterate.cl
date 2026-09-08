@@ -74,21 +74,25 @@ __kernel void bitmap_gfp_iterate(
     __global const float* runtime_params
 ) {
     (void)changed_flag;
-    const size_t gid_s = get_global_id(0);
-    if (gid_s >= (size_t)(@@TOTAL_STATES@@)) return;
+    const size_t lane = get_global_id(0);
+    const size_t lane_count = get_global_size(0);
+    for (size_t gid_s = lane; gid_s < (size_t)(@@TOTAL_STATES@@);
+         gid_s += lane_count) {
 
 #if @@USE_INLINE_DYNAMICS@@
-    const size_t succ = bitmap_inline_successor(gid_s, runtime_params);
-    const uint new_safe = (succ != (size_t)(-1)) ? bitmap_get(bitmap_in, succ) : 0u;
+        const size_t succ = bitmap_inline_successor(gid_s, runtime_params);
+        const uint new_safe = (succ != (size_t)(-1))
+            ? bitmap_get(bitmap_in, succ) : 0u;
 #else
-    (void)runtime_params;
-    const ulong successor = next_state_table[gid_s];
-    const uint new_safe = successor != ULONG_MAX
-        ? bitmap_get(bitmap_in, (size_t)successor) : 0u;
+        (void)runtime_params;
+        const ulong successor = next_state_table[gid_s];
+        const uint new_safe = successor != ULONG_MAX
+            ? bitmap_get(bitmap_in, (size_t)successor) : 0u;
 #endif
 
-    if (new_safe) {
-        atomic_or((volatile __global uint*)&bitmap_out[gid_s >> 5],
-                  1u << (uint)(gid_s & (size_t)31));
+        if (new_safe) {
+            atomic_or((volatile __global uint*)&bitmap_out[gid_s >> 5],
+                      1u << (uint)(gid_s & (size_t)31));
+        }
     }
 }

@@ -1,0 +1,7 @@
+threshold_gfp_prefix {
+    threshold_a { MemConfig = "pfaces_rw_global"; isNewOrResident = "false"; residentFuncIdx = "6"; residentFuncArgIdx = "1"; baseTypeSize = "4"; }
+    threshold_b { MemConfig = "pfaces_rw_global"; isNewOrResident = "false"; residentFuncIdx = "6"; residentFuncArgIdx = "2"; baseTypeSize = "4"; }
+    source_parity { MemConfig = "pfaces_rw_global"; isNewOrResident = "false"; residentFuncIdx = "6"; residentFuncArgIdx = "3"; baseTypeSize = "4"; }
+    sweep_params { MemConfig = "pfaces_rw_global"; isNewOrResident = "false"; residentFuncIdx = "5"; residentFuncArgIdx = "1"; baseTypeSize = "8"; }
+    changed_flag { MemConfig = "pfaces_rw_global"; isNewOrResident = "false"; residentFuncIdx = "6"; residentFuncArgIdx = "4"; baseTypeSize = "4"; }
+}

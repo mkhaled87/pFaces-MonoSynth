@@ -50,6 +50,11 @@ def predecessor(current: Set[Point], successor: Successor) -> Set[Point]:
     return {point for point in current if controlled(point, current, successor)}
 
 
+def lower_closed_predecessor(current: Set[Point], successor: Successor,
+                             universe: Iterable[Point]) -> Set[Point]:
+    return lower_closure(predecessor(current, successor), universe) & current
+
+
 def threshold_table(points: Set[Point], widths: Sequence[int], d_star: int) -> Tuple[int, ...]:
     key_dims = [d for d in range(len(widths)) if d != d_star]
     result: List[int] = []
@@ -184,10 +189,11 @@ def run_automatica(widths: Sequence[int], successor: Successor) -> Tuple[Set[Poi
 
 
 def run_threshold(widths: Sequence[int], successor: Successor) -> Tuple[Set[Point], List[Set[Point]]]:
-    current = set(grid(widths))
+    universe = set(grid(widths))
+    current = set(universe)
     trace = [set(current)]
     while True:
-        nxt = predecessor(current, successor)
+        nxt = lower_closed_predecessor(current, successor, universe)
         trace.append(set(nxt))
         if nxt == current:
             return current, trace
@@ -220,7 +226,8 @@ def enumerate_monotone_successors(widths: Sequence[int]) -> Iterable[Successor]:
 
 
 def assert_solver_methods(widths: Sequence[int], successor: Successor) -> None:
-    cdc, cdc_trace, cdc_mutations = run_cdc(widths, successor)
+    cdc_host, cdc_host_trace, cdc_host_mutations = run_cdc(widths, successor)
+    cdc_gpu, cdc_gpu_trace, cdc_gpu_mutations = run_cdc(widths, successor)
     cdc_threshold_host, cdc_threshold_trace, threshold_mutations = (
         run_cdc_threshold(widths, successor)
     )
@@ -235,14 +242,17 @@ def assert_solver_methods(widths: Sequence[int], successor: Successor) -> None:
     bitmap_reference, _ = run_threshold(widths, successor)
     threshold_cpu_reference, _ = run_threshold(widths, successor)
     assert auto_scan == auto_threshold == proposed
-    assert cdc == cdc_threshold_host == cdc_threshold_gpu == proposed
-    assert cdc_trace == cdc_threshold_trace == gpu_trace
-    assert cdc_mutations == threshold_mutations == gpu_mutations
+    assert cdc_host == cdc_gpu == cdc_threshold_host == cdc_threshold_gpu == proposed
+    assert cdc_host_trace == cdc_gpu_trace == cdc_threshold_trace == gpu_trace
+    assert cdc_host_mutations == cdc_gpu_mutations == threshold_mutations == gpu_mutations
     assert bitmap_reference == threshold_cpu_reference == proposed
     assert scan_trace == threshold_membership_trace == proposed_trace
     hashes = {
         canonical_hash(result, widths, 0)
-        for result in (cdc, cdc_threshold_host, auto_scan, auto_threshold, proposed)
+        for result in (
+            cdc_host, cdc_gpu, cdc_threshold_host, auto_scan,
+            auto_threshold, proposed,
+        )
     }
     assert len(hashes) == 1
 
@@ -276,6 +286,39 @@ def check_known_examples() -> None:
         successor_4[(x, y)] = None if x >= 3 else (min(4, x + 2), y)
     assert is_monotone(successor_4, universe)
     assert_solver_methods((4, 4), successor_4)
+
+    # Discretization need not preserve monotonicity exactly.  A controlled
+    # upper point must retain its lower closure even when the lower point's
+    # direct successor is unsafe.
+    successor_nonmonotone: Successor = {
+        (1, 1): None,
+        (1, 2): (1, 2),
+        (2, 1): None,
+        (2, 2): (2, 2),
+    }
+    universe_2 = set(grid((2, 2)))
+    direct = predecessor(universe_2, successor_nonmonotone)
+    closed = lower_closed_predecessor(
+        universe_2, successor_nonmonotone, universe_2
+    )
+    assert (1, 1) not in direct
+    assert closed == universe_2
+
+    threshold_kernel = (Path(__file__).resolve().parents[1] /
+                        "kernel-pack" / "threshold_gfp.cl").read_text()
+    assert "__kernel void threshold_gfp_prefix" in threshold_kernel
+    assert "const ulong lane_count = (ulong)get_global_size(0);" in threshold_kernel
+    assert "key += lane_count" in threshold_kernel
+
+    repo = Path(__file__).resolve().parents[1]
+    bitmap_kernel = (repo / "kernel-pack" / "bitmap_gfp_iterate.cl").read_text()
+    bitmap_driver = (repo / "kernel-driver" /
+                     "pfacesKernel_mono_synth.cpp").read_text()
+    assert "const size_t lane_count = get_global_size(0);" in bitmap_kernel
+    assert "gid_s += lane_count" in bitmap_kernel
+    assert ("kGridStrideWorkItems = std::size_t{1} << 30;" in
+            bitmap_driver)
+    assert "std::min(static_cast<std::size_t>(total_states_)" in bitmap_driver
 
 
 def check_config_contract() -> None:
@@ -339,6 +382,7 @@ use_tt_only = \"true\";
     for method, text in generated.items():
         assert f'synthesis_method = "{method}";' in text
         assert 'transition_backend = "precomputed";' in text
+        assert 'cdc_backend = "gpu";' in text
         assert 'cdc_threshold_backend = "host";' in text
         assert 'boundary_semantics = "favorable_saturating";' in text
         assert not any(re.search(rf"(?m)^\s*{key}\s*=", text) for key in legacy)
@@ -350,6 +394,13 @@ use_tt_only = \"true\";
         assert f'synthesis_method = "{method}";' in text
         assert 'transition_backend = "precomputed";' in text
         assert 'boundary_semantics = "favorable_saturating";' in text
+
+    host_cdc_text = runner.generated_config(
+        base, "shared", "cdc", 0, Path("/absolute/dynamics.cl"),
+        cdc_backend="host",
+    )
+    assert 'synthesis_method = "cdc";' in host_cdc_text
+    assert 'cdc_backend = "host";' in host_cdc_text
 
     gpu_text = runner.generated_config(
         base, "shared", "cdc_threshold", 0, Path("/absolute/dynamics.cl"),
@@ -365,21 +416,32 @@ use_tt_only = \"true\";
     assert 'transition_backend = "inline";' in inline_text
     assert 'save_transitions = "false";' in inline_text
 
+    precompute_text = runner.generated_config(
+        base, "shared", "precompute_only", 0, Path("/absolute/dynamics.cl"),
+        {"save_controller": "false"},
+    )
+    assert 'synthesis_method = "precompute_only";' in precompute_text
+    assert 'transition_backend = "precomputed";' in precompute_text
+    assert 'save_transitions = "true";' in precompute_text
+    assert 'save_controller = "false";' in precompute_text
+
     import tempfile
     with tempfile.TemporaryDirectory() as directory:
         table_rows = []
-        for method, backend, solver_ms in (
-            ("cdc", "host", 10.0),
-            ("cdc_threshold", "host", 4.0),
-            ("cdc_threshold", "gpu", 6.0),
-            ("automatica_scan", "host", 8.0),
-            ("automatica_threshold", "host", 7.0),
-            ("threshold", "host", 1.0),
-            ("bitmap_reference", "host", 2.0),
+        for method, cdc_backend, threshold_backend, solver_ms in (
+            ("cdc", "host", "host", 10.0),
+            ("cdc", "gpu", "host", 12.0),
+            ("cdc_threshold", "gpu", "host", 4.0),
+            ("cdc_threshold", "gpu", "gpu", 6.0),
+            ("automatica_scan", "gpu", "host", 8.0),
+            ("automatica_threshold", "gpu", "host", 7.0),
+            ("threshold", "gpu", "host", 1.0),
+            ("bitmap_reference", "gpu", "host", 2.0),
         ):
             table_rows.append(runner.Measurement(
-                case="fixture", method=method,
-                cdc_threshold_backend=backend, repetition=1, status="ok",
+                case="fixture", method=method, cdc_backend=cdc_backend,
+                cdc_threshold_backend=threshold_backend,
+                repetition=1, status="ok",
                 returncode=0, wall_ms=solver_ms, solver_ms=solver_ms,
                 cdc_passes=3, cdc_mutations=4, gfp_rounds=5,
                 frontier_batches=6, allocated_bytes=1024 * 1024,
@@ -387,9 +449,11 @@ use_tt_only = \"true\";
         paper_table = Path(directory) / "paper_table.tex"
         runner.write_paper_table(paper_table, table_rows)
         table_text = paper_table.read_text()
+        assert "CDC (host)" in table_text
+        assert "CDC (gpu)" in table_text
         assert "CDC + threshold (host)" in table_text
         assert "CDC + threshold (gpu)" in table_text
-        assert table_text.count("\\\\") == 7
+        assert table_text.count("\\\\") == 8
 
         cache = Path(directory) / "transitions.u64.v2.bin"
         widths = (2, 2)

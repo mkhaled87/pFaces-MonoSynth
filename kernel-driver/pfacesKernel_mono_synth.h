@@ -26,7 +26,8 @@ enum class KernelFunction : std::size_t {
   BITMAP_GFP_ITERATE = 7,
   BITMAP_GFP_ADVANCE = 8,
   BITMAP_GFP_PREFIX = 9,
-  THRESHOLD_DECREMENT = 10
+  THRESHOLD_DECREMENT = 10,
+  THRESHOLD_GFP_PREFIX = 11
 };
 
 constexpr std::size_t functionIndex(KernelFunction function) {
@@ -37,6 +38,7 @@ enum class MembershipKind { SCAN, THRESHOLD };
 
 struct SolverStats {
   SynthesisMethod method = SynthesisMethod::THRESHOLD;
+  CdcBackend cdc_backend = CdcBackend::GPU;
   CdcThresholdBackend cdc_threshold_backend = CdcThresholdBackend::HOST;
   std::uint64_t cdc_epochs = 0;
   std::uint64_t cdc_passes = 0;
@@ -147,6 +149,7 @@ class pfacesKernel_mono_synth : public pfaces2DKernel {
                                cl::NDRange offset);
   void appendCommonFinalize(pfacesParallelProgram& program);
 
+  static size_t hostRunCdc(void*, void*);
   static size_t hostInitCdc(void*, void*);
   static size_t hostPrepareCdc(void*, void*);
   static size_t hostProcessCdc(void*, void*);
@@ -211,6 +214,7 @@ class pfacesKernel_mono_synth : public pfaces2DKernel {
   std::shared_ptr<configReader> config_;
   SynthesisMethod method_ = SynthesisMethod::THRESHOLD;
   TransitionBackend backend_ = TransitionBackend::PRECOMPUTED;
+  CdcBackend cdc_backend_ = CdcBackend::GPU;
   CdcThresholdBackend cdc_threshold_backend_ = CdcThresholdBackend::HOST;
   std::size_t state_dimension_ = 0;
   std::size_t max_basis_elements_ = 0;

@@ -2,6 +2,7 @@
 
 const char* synthesisMethodName(SynthesisMethod method) {
 	switch (method) {
+	case SynthesisMethod::PRECOMPUTE_ONLY: return "precompute_only";
 	case SynthesisMethod::CDC: return "cdc";
 	case SynthesisMethod::CDC_THRESHOLD: return "cdc_threshold";
 	case SynthesisMethod::AUTOMATICA_SCAN: return "automatica_scan";
@@ -15,6 +16,10 @@ const char* synthesisMethodName(SynthesisMethod method) {
 
 const char* cdcThresholdBackendName(CdcThresholdBackend backend) {
 	return backend == CdcThresholdBackend::GPU ? "gpu" : "host";
+}
+
+const char* cdcBackendName(CdcBackend backend) {
+	return backend == CdcBackend::GPU ? "gpu" : "host";
 }
 
 const char* transitionBackendName(TransitionBackend backend) {
@@ -856,7 +861,8 @@ defaultConfiguration::defaultConfiguration()
 	m_schema[820] = "boundary_seeding = string";
 	m_schema[821] = "boundary_semantics = string";
 	m_schema[822] = "cdc_threshold_backend = string";
-	m_schema[823] = 0;
+	m_schema[823] = "cdc_backend = string";
+	m_schema[824] = 0;
 
 
 	std::stringstream m_str;
@@ -919,6 +925,7 @@ defaultConfiguration::defaultConfiguration()
 	m_str << "synthesis_method = \"threshold\";\n";
 	m_str << "transition_semantics = \"extremal_single_successor\";\n";
 	m_str << "transition_backend = \"precomputed\";\n";
+	m_str << "cdc_backend = \"gpu\";\n";
 	m_str << "cdc_threshold_backend = \"host\";\n";
 	m_str << "boundary_semantics = \"strict_unsafe\";\n";
 	m_str << "threshold_d_star = \"-1\";\n";
@@ -1629,7 +1636,8 @@ void configReader::load_values() {
 		std::string method = "threshold";
 		try { method = m_spConfigObject->readConfigValueString("synthesis_method"); }
 		catch (...) {}
-		if (method == "cdc") m_synthesis_method = SynthesisMethod::CDC;
+		if (method == "precompute_only") m_synthesis_method = SynthesisMethod::PRECOMPUTE_ONLY;
+		else if (method == "cdc") m_synthesis_method = SynthesisMethod::CDC;
 		else if (method == "cdc_threshold") m_synthesis_method = SynthesisMethod::CDC_THRESHOLD;
 		else if (method == "automatica_scan") m_synthesis_method = SynthesisMethod::AUTOMATICA_SCAN;
 		else if (method == "automatica_threshold") m_synthesis_method = SynthesisMethod::AUTOMATICA_THRESHOLD;
@@ -1637,8 +1645,19 @@ void configReader::load_values() {
 		else if (method == "bitmap_reference") m_synthesis_method = SynthesisMethod::BITMAP_REFERENCE;
 		else if (method == "threshold_cpu_reference") m_synthesis_method = SynthesisMethod::THRESHOLD_CPU_REFERENCE;
 		else throw pfacesConfigurationException(
-			"synthesis_method must be cdc, cdc_threshold, automatica_scan, automatica_threshold, "
+			"synthesis_method must be precompute_only, cdc, cdc_threshold, automatica_scan, automatica_threshold, "
 			"threshold, bitmap_reference, or threshold_cpu_reference");
+
+		std::string cdc_backend = "gpu";
+		try {
+			cdc_backend = m_spConfigObject->readConfigValueString("cdc_backend");
+		} catch (...) {}
+		if (cdc_backend == "host")
+			m_cdc_backend = CdcBackend::HOST;
+		else if (cdc_backend == "gpu")
+			m_cdc_backend = CdcBackend::GPU;
+		else throw pfacesConfigurationException(
+			"cdc_backend must be host or gpu");
 
 		std::string cdc_threshold_backend = "host";
 		try {
@@ -1870,6 +1889,16 @@ int configReader::validate_values() {
 	if (m_synthesis_method == SynthesisMethod::CDC_THRESHOLD &&
 	    m_transition_backend != TransitionBackend::PRECOMPUTED) {
 		sserrors << "\t-synthesis_method=cdc_threshold requires transition_backend=precomputed." << std::endl;
+		ret = VALIDATE_RESULT_FAILED;
+	}
+	if (m_synthesis_method == SynthesisMethod::PRECOMPUTE_ONLY &&
+	    m_transition_backend != TransitionBackend::PRECOMPUTED) {
+		sserrors << "\t-synthesis_method=precompute_only requires transition_backend=precomputed." << std::endl;
+		ret = VALIDATE_RESULT_FAILED;
+	}
+	if (m_synthesis_method == SynthesisMethod::PRECOMPUTE_ONLY &&
+	    !m_save_transitions) {
+		sserrors << "\t-synthesis_method=precompute_only requires save_transitions=true." << std::endl;
 		ret = VALIDATE_RESULT_FAILED;
 	}
 

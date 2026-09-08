@@ -83,8 +83,10 @@ __kernel void threshold_gfp_step(
     __global uint* changed_flag,
     __global const float* runtime_params
 ) {
-    const ulong key = (ulong)get_global_id(0);
-    if (key >= (ulong)@@THRESHOLD_TABLE_SIZE@@) return;
+    const ulong lane = (ulong)get_global_id(0);
+    const ulong lane_count = (ulong)get_global_size(0);
+    for (ulong key = lane; key < (ulong)@@THRESHOLD_TABLE_SIZE@@;
+         key += lane_count) {
 
     __global const uint* source = source_parity[0] ? threshold_b : threshold_a;
     __global uint* destination = source_parity[0] ? threshold_a : threshold_b;
@@ -125,7 +127,7 @@ __kernel void threshold_gfp_step(
     const uint old_height = source[key];
     if (old_height == 0) {
         destination[key] = 0;
-        return;
+        continue;
     }
 
     int successor_height;
@@ -143,7 +145,7 @@ __kernel void threshold_gfp_step(
     if (successor_key != ULONG_MAX && successor_height >= 1 &&
         (uint)successor_height <= source[successor_key]) {
         destination[key] = old_height;
-        return;
+        continue;
     }
 
     uint best = 0;
@@ -174,5 +176,48 @@ __kernel void threshold_gfp_step(
     }
 
     destination[key] = best;
+#if @@STATE_DIM@@ == 1
     if (best != old_height) atomic_or((volatile __global uint*)changed_flag, 1u);
+#endif
+    }
+}
+
+/* Lower-close the destination table along one non-threshold axis. */
+__kernel void threshold_gfp_prefix(
+    __global uint* threshold_a,
+    __global uint* threshold_b,
+    __global const uint* source_parity,
+    __global const ulong* sweep_params,
+    __global uint* changed_flag
+) {
+    __global const uint* source = source_parity[0] ? threshold_b : threshold_a;
+    __global uint* destination = source_parity[0] ? threshold_a : threshold_b;
+    const ulong fiber = (ulong)get_global_id(0);
+    const ulong stride = sweep_params[0];
+    const ulong width = sweep_params[1];
+    const ulong fibers = (ulong)@@THRESHOLD_TABLE_SIZE@@ / width;
+    if (fiber >= fibers) return;
+
+    const ulong outer = fiber / stride;
+    const ulong inner = fiber % stride;
+    const ulong base = outer * stride * width + inner;
+    for (ulong coordinate = width - 1; coordinate > 0; --coordinate) {
+        const ulong lower = base + (coordinate - 1) * stride;
+        const ulong upper = lower + stride;
+        destination[lower] = max(destination[lower], destination[upper]);
+    }
+
+    if (stride == fibers) {
+        bool changed = false;
+        for (ulong coordinate = 0; coordinate < width; ++coordinate) {
+            const ulong index = base + coordinate * stride;
+            if (destination[index] != source[index]) {
+                changed = true;
+                break;
+            }
+        }
+        if (changed) {
+            atomic_or((volatile __global uint*)changed_flag, 1u);
+        }
+    }
 }

@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Run the original paper scale matrix with all seven validated implementations.
+"""Run the progressive six-method scale matrix.
 
 Edit the four configuration blocks immediately below to change experiments,
 methods, repetition policy, or resource limits.  Base example files are never
 modified: generated configurations, logs, hashes, and tables live under the
 selected output directory.
 
-The runner distinguishes two regimes explicitly:
+The runner distinguishes two transition regimes explicitly:
 
-* At scales admitted by ``max_precomputed_states``, every method uses one shared
-  validated 64-bit successor cache.
-* Beyond that cap, only methods that implement inline dynamics (threshold GFP
-  and bitmap GFP) may run.  Other rows are retained as resource skips rather
-  than being silently omitted.  Bitmap GFP also has its own full-grid cap.
+* CDC and Automatica use one shared validated 64-bit successor cache while it
+  fits the configured state cap.
+* Threshold GFP and bitmap GFP use inline dynamics. Rows beyond a method's
+  resource cap are retained as explicit resource skips.
+
+Within each example, a method advances to the next scale only after all of its
+measured runs succeed within ``max_advance_seconds``. Other methods continue
+independently.
 
 Successful methods on the same grid must produce identical complete canonical
 threshold hashes, byte counts, and safe-cell counts.  CDC traces, Automatica
@@ -42,19 +45,20 @@ import run_solver_benchmark as core
 # ---------------------------------------------------------------------------
 
 PAPER_METHODS = (
-    {"key": "cdc", "label": "CDC", "solver": "cdc", "cdc_backend": "host", "transition": "precomputed"},
-    {"key": "cdc_threshold_host", "label": "CDC + threshold (host)", "solver": "cdc_threshold", "cdc_backend": "host", "transition": "precomputed"},
-    {"key": "cdc_threshold_gpu", "label": "CDC + threshold (GPU)", "solver": "cdc_threshold", "cdc_backend": "gpu", "transition": "precomputed"},
-    {"key": "automatica_scan", "label": "Automatica scan", "solver": "automatica_scan", "cdc_backend": "host", "transition": "precomputed"},
-    {"key": "automatica_threshold", "label": "Automatica + threshold", "solver": "automatica_threshold", "cdc_backend": "host", "transition": "precomputed"},
-    {"key": "threshold", "label": "Threshold GFP", "solver": "threshold", "cdc_backend": "host", "transition": "auto"},
-    {"key": "bitmap_reference", "label": "Bitmap GFP", "solver": "bitmap_reference", "cdc_backend": "host", "transition": "auto"},
+    {"key": "cdc_host", "label": "CDC (host)", "solver": "cdc", "cdc_backend": "host", "transition": "precomputed"},
+    {"key": "cdc_gpu", "label": "CDC (GPU)", "solver": "cdc", "cdc_backend": "gpu", "transition": "precomputed"},
+    {"key": "cdc_threshold_host", "label": "CDC + threshold (host)", "solver": "cdc_threshold", "cdc_threshold_backend": "host", "transition": "precomputed"},
+    {"key": "cdc_threshold_gpu", "label": "CDC + threshold (GPU)", "solver": "cdc_threshold", "cdc_threshold_backend": "gpu", "transition": "precomputed"},
+    {"key": "automatica_scan", "label": "Automatica scan (GPU)", "solver": "automatica_scan", "transition": "precomputed"},
+    {"key": "automatica_threshold", "label": "Automatica + threshold (GPU)", "solver": "automatica_threshold", "transition": "precomputed"},
+    {"key": "threshold", "label": "Threshold GFP (ours, inline)", "solver": "threshold", "transition": "inline"},
+    {"key": "bitmap_reference", "label": "Bitmap GFP", "solver": "bitmap_reference", "transition": "inline"},
 )
 
 PAPER_EXPERIMENTS = (
     {
         "key": "acc", "label": "ACC", "config": "examples/acc/acc.cfg",
-        "scales": (8, 9, 10, 12, 14),
+        "scales": (6, 7, 8, 9, 10, 12, 14),
         # These are the established near-isotropic ACC grids used to avoid the
         # empty-set discretization resonance on equal-width refinements.
         "preferred_widths": {
@@ -64,34 +68,36 @@ PAPER_EXPERIMENTS = (
     },
     {
         "key": "acc_5d", "label": "ACC-5D", "config": "examples/acc_5d/acc_5d.cfg",
-        "scales": (8, 9, 11), "preferred_widths": {},
+        "scales": (6, 7, 8, 9, 11), "preferred_widths": {},
     },
     {
         "key": "turn_ego", "label": "Turn-Ego", "config": "examples/turn_ego_first/turn_ego_first.cfg",
-        "scales": (8, 9, 10, 12, 14), "preferred_widths": {},
+        "scales": (6, 7, 8, 9, 10, 12, 14), "preferred_widths": {},
     },
     {
         "key": "turn_oncoming", "label": "Turn-Onc", "config": "examples/turn_oncoming_first/turn_oncoming_first.cfg",
-        "scales": (8, 9, 10, 12, 14), "preferred_widths": {},
+        "scales": (6, 7, 8, 9, 10, 12, 14), "preferred_widths": {},
     },
 )
 
 RUN_POLICY = {
     "device": "1",
     "pfaces": "pfaces",
-    "warmup_runs": 1,
+    "warmup_runs": 0,
     "measured_runs": 1,
+    "max_advance_seconds": 60,
     "verbose": 1,
     "resume": True,
     "retry_non_ok_on_resume": False,
     "timeouts_seconds": {
-        "cdc": 3600,
-        "cdc_threshold_host": 3600,
-        "cdc_threshold_gpu": 3600,
-        "automatica_scan": 3600,
-        "automatica_threshold": 3600,
-        "threshold": 1800,
-        "bitmap_reference": 1800,
+        "cdc_host": 1200,
+        "cdc_gpu": 1200,
+        "cdc_threshold_host": 1200,
+        "cdc_threshold_gpu": 1200,
+        "automatica_scan": 1200,
+        "automatica_threshold": 1200,
+        "threshold": 1200,
+        "bitmap_reference": 1200,
     },
 }
 
@@ -107,11 +113,11 @@ RESOURCE_POLICY = {
     # Full transition monotonicity auditing is exact but O(d|X|). Larger caches
     # receive exact header/geometry/file-size checks and are labeled accordingly.
     "max_exhaustive_transition_audit_states": 10_000_000,
-    "keep_transition_caches": False,
+    "keep_transition_caches": True,
     "keep_canonical_outputs": False,
 }
 
-DEFAULT_OUTPUT = core.ROOT / "tools" / "benchmark_results" / "full_paper_seven_methods"
+DEFAULT_OUTPUT = core.ROOT / "tools" / "benchmark_results" / "full_paper_optimized"
 
 
 # ---------------------------------------------------------------------------
@@ -155,19 +161,28 @@ def experiment_widths(experiment: Dict[str, object], scale: int,
     return tuple(widths) if widths is not None else balanced_widths(10 ** scale, dimension)
 
 
+def _float32(value: float) -> float:
+    return struct.unpack("<f", struct.pack("<f", value))[0]
+
+
 def eta_for_widths(lower: Sequence[float], upper: Sequence[float],
                    widths: Sequence[int]) -> str:
-    return ",".join(
-        f"{(hi - lo) / (width - 1):.18g}"
-        for lo, hi, width in zip(lower, upper, widths)
-    )
-
-
-def method_by_key(key: str) -> Dict[str, str]:
-    for method in PAPER_METHODS:
-        if method["key"] == key:
-            return method
-    raise KeyError(key)
+    values = []
+    for lo, hi, width in zip(lower, upper, widths):
+        span = _float32(_float32(hi) - _float32(lo))
+        eta = _float32(span / (width - 1))
+        # pFaces stores geometry as cl_float and truncates span / eta.
+        # Preserve the nearest float when it yields the requested width; only
+        # move one ULP toward zero when rounding would drop the final cell.
+        if int(_float32(span / eta)) + 1 != width:
+            bits = struct.unpack("<I", struct.pack("<f", eta))[0]
+            if bits <= 1:
+                raise ValueError("state resolution is outside positive float32")
+            eta = struct.unpack("<f", struct.pack("<I", bits - 1))[0]
+        if int(_float32(span / eta)) + 1 != width:
+            raise ValueError("cannot represent requested grid in float32")
+        values.append(f"{eta:.18g}")
+    return ",".join(values)
 
 
 def transition_backend(method: Dict[str, str], states: int) -> Tuple[str, str]:
@@ -177,6 +192,13 @@ def transition_backend(method: Dict[str, str], states: int) -> Tuple[str, str]:
         if not precomputed_ok:
             return "skip", "precomputed successor table exceeds configured state cap"
         return "precomputed", ""
+    if policy == "inline":
+        if method["key"] == "bitmap_reference" and states > int(
+                RESOURCE_POLICY["max_bitmap_inline_states"]):
+            return "skip", "full-grid bitmap exceeds configured state cap"
+        return "inline", ""
+    if policy != "auto":
+        raise ValueError(f"invalid transition policy for {method['key']}: {policy}")
     if method["key"] == "bitmap_reference" and states > int(
             RESOURCE_POLICY["max_bitmap_inline_states"]):
         return "skip", "full-grid bitmap exceeds configured state cap"
@@ -194,7 +216,8 @@ def plan_method(method: Dict[str, str], widths: Sequence[int], d_star: int) -> D
         "run_method": method["key"],
         "method": method["solver"],
         "label": method["label"],
-        "cdc_threshold_backend": method["cdc_backend"],
+        "cdc_backend": method.get("cdc_backend", "n/a"),
+        "cdc_threshold_backend": method.get("cdc_threshold_backend", "n/a"),
         "transition_backend": backend,
         "status": "planned" if backend != "skip" else "skipped_resource",
         "reason": reason,
@@ -298,7 +321,11 @@ def validate_successful_rows(rows: Sequence[Dict[str, object]]) -> Dict[str, obj
     if len(outputs) != 1:
         raise RuntimeError(f"cross-method canonical output mismatch: {outputs}")
 
-    cdc_keys = [key for key in ("cdc", "cdc_threshold_host", "cdc_threshold_gpu") if key in by_method]
+    cdc_keys = [
+        key for key in (
+            "cdc_host", "cdc_gpu", "cdc_threshold_host", "cdc_threshold_gpu"
+        ) if key in by_method
+    ]
     if len(cdc_keys) > 1:
         traces = {
             (as_int(by_method[key][0], "cdc_passes"),
@@ -354,7 +381,7 @@ def summarize(plans: Sequence[Dict[str, object]], raw_rows: Sequence[Dict[str, o
         measured = [row for row in matching if row.get("status") == "ok" and as_int(row, "repetition") > 0]
         statuses = {str(row.get("status", "")) for row in matching}
         status = str(plan["status"])
-        if status != "skipped_resource":
+        if status == "planned":
             if len(measured) == measured_runs:
                 status = "ok"
             elif measured:
@@ -365,14 +392,25 @@ def summarize(plans: Sequence[Dict[str, object]], raw_rows: Sequence[Dict[str, o
                 status = "failed"
         row: Dict[str, object] = dict(plan)
         row["status"] = status
+        if status in ("timeout", "failed"):
+            errors = sorted({
+                str(item.get("error", "")).strip()
+                for item in matching if str(item.get("error", "")).strip()
+            })
+            row["reason"] = "; ".join(errors) or status
         row["successful_measured_runs"] = len(measured)
         metadata = case_metadata.get(str(plan["case"]), {})
         if plan["transition_backend"] == "precomputed":
             row["shared_transition_ms"] = metadata.get("transition_ms", "")
+            row["shared_transition_wall_ms"] = metadata.get(
+                "cache_prepare_wall_ms", ""
+            )
         elif plan["transition_backend"] == "inline":
             row["shared_transition_ms"] = "inline"
+            row["shared_transition_wall_ms"] = "inline"
         else:
             row["shared_transition_ms"] = ""
+            row["shared_transition_wall_ms"] = ""
         row["equality_status"] = metadata.get("equality_status", "not_run")
         if measured:
             first = measured[0]
@@ -400,22 +438,25 @@ def fmt_ms(value: object) -> str:
 
 def write_markdown(path: Path, rows: Sequence[Dict[str, object]]) -> None:
     lines = [
-        "# Seven-Method Full Paper Matrix",
+        "# Progressive Six-Method Scale Matrix",
         "",
         "Times are medians in milliseconds. `Shared trans.` is common successor precomputation and is excluded from solver total. CDC steps are passes/mutations; Automatica steps are rounds/frontier batches.",
         "",
-        "| Example | Target | Actual cells | Grid | Method | Backend | Status | Equality | Steps | Shared trans. | Membership | Representation | Threshold maint. | Basis/frontier | Solver total | Allocated MiB | Safe cells |",
-        "|---|---:|---:|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Example | Target | Actual cells | Grid | Method | Backend | Status | Reason | Equality | Steps | Cache kernel/read | Cache process wall | Membership | Representation | Threshold maint. | Basis/frontier | Solver total | Wall | Allocated MiB | Safe cells |",
+        "|---|---:|---:|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         allocated = "--" if not row.get("allocated_bytes") else f"{as_int(row, 'allocated_bytes') / (1024 * 1024):.2f}"
         lines.append(
             f"| {row['example']} | 1e{row['scale']} | {row['actual_cells']} | {row['widths']} | "
-            f"{row['label']} | {row['transition_backend']} | {row['status']} | {row.get('equality_status', '--')} | "
+            f"{row['label']} | {row['transition_backend']} | {row['status']} | "
+            f"{str(row.get('reason', '') or '--').replace('|', '/')} | {row.get('equality_status', '--')} | "
             f"{row.get('steps', '--')} | {fmt_ms(row.get('shared_transition_ms'))} | "
+            f"{fmt_ms(row.get('shared_transition_wall_ms'))} | "
             f"{fmt_ms(row.get('membership_ms'))} | {fmt_ms(row.get('representation_ms'))} | "
             f"{fmt_ms(row.get('threshold_maintenance_ms'))} | {fmt_ms(row.get('basis_update_ms'))} | "
-            f"{fmt_ms(row.get('solver_ms'))} | {allocated} | {row.get('safe_cells', '--')} |"
+            f"{fmt_ms(row.get('solver_ms'))} | {fmt_ms(row.get('wall_ms'))} | "
+            f"{allocated} | {row.get('safe_cells', '--')} |"
         )
     path.write_text("\n".join(lines) + "\n")
 
@@ -432,7 +473,7 @@ def write_latex(path: Path, rows: Sequence[Dict[str, object]]) -> None:
         r"\scriptsize",
         r"\setlength{\tabcolsep}{2.3pt}",
         r"\begin{longtable}{@{}llrlcllrrrrrrrr@{}}",
-        r"\caption{Seven-implementation paper-scale matrix. Times are medians in ms; shared transition construction is excluded from solver total.}\label{tab:full-seven-method-matrix}\\",
+        r"\caption{Optimized six-implementation paper-scale matrix. Times are medians in ms; shared transition construction is excluded from solver total.}\label{tab:full-optimized-matrix}\\",
         r"\toprule",
         r"Example & Scale & $|X|$ & Grid & Method & Trans. & Status & Steps & Shared & Memb. & Repr. & Maint. & Basis & Total & MiB \\",
         r"\midrule\endfirsthead",
@@ -463,13 +504,50 @@ def parse_csv_filter(value: Optional[str]) -> Optional[set]:
     return None if not value else {item.strip() for item in value.split(",") if item.strip()}
 
 
-def parse_scale_filter(value: Optional[str]) -> Optional[set]:
+def parse_scale_filter(value: Optional[str]) -> Optional[List[int]]:
     if not value:
         return None
-    return {
-        int(item.strip().lower().removeprefix("1e"))
-        for item in value.split(",") if item.strip()
-    }
+    scales = []
+    for item in value.split(","):
+        normalized = item.strip().lower().removeprefix("1e")
+        if not normalized:
+            continue
+        try:
+            scale = int(normalized)
+        except ValueError as error:
+            raise ValueError(f"invalid N exponent: {item!r}") from error
+        if scale < 1:
+            raise ValueError("N exponents must be positive integers")
+        if scale not in scales:
+            scales.append(scale)
+    if not scales:
+        raise ValueError("at least one N exponent is required")
+    return scales
+
+
+def progression_stop_reason(case: str, run_method: str,
+                            raw_rows: Sequence[Dict[str, object]],
+                            measured_runs: int,
+                            max_advance_seconds: float) -> Optional[str]:
+    measured = [
+        row for row in raw_rows
+        if row.get("case") == case
+        and row.get("run_method") == run_method
+        and as_int(row, "repetition") > 0
+    ]
+    successful = [row for row in measured if row.get("status") == "ok"]
+    if len(successful) != measured_runs:
+        statuses = sorted({str(row.get("status", "failed")) for row in measured})
+        outcome = ", ".join(statuses) if statuses else "missing measured result"
+        return f"not advanced after {case}: {outcome}"
+    wall_ms = max(as_float(row, "wall_ms") for row in successful)
+    limit_ms = max_advance_seconds * 1000.0
+    if wall_ms > limit_ms:
+        return (
+            f"not advanced after {case}: wall time {wall_ms / 1000.0:.3f}s "
+            f"exceeded {max_advance_seconds:g}s"
+        )
+    return None
 
 
 def build_manifest(experiments: Sequence[Dict[str, object]], methods: Sequence[Dict[str, str]],
@@ -478,6 +556,15 @@ def build_manifest(experiments: Sequence[Dict[str, object]], methods: Sequence[D
     for experiment in experiments:
         path = core.repository_path(str(experiment["config"])).resolve()
         inputs[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    implementation_paths = sorted(
+        path for directory in (core.ROOT / "kernel-driver", core.ROOT / "kernel-pack")
+        for path in directory.rglob("*")
+        if path.is_file() and path.suffix in {".cpp", ".h", ".cl", ".mem"}
+    )
+    implementation_hashes = {
+        str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in implementation_paths
+    }
     try:
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=core.ROOT, text=True,
@@ -485,19 +572,29 @@ def build_manifest(experiments: Sequence[Dict[str, object]], methods: Sequence[D
         ).stdout.strip()
     except subprocess.CalledProcessError:
         commit = "unknown"
+    worktree_status = subprocess.run(
+        ["git", "status", "--short"], cwd=core.ROOT, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+    ).stdout.splitlines()
+    driver = core.ROOT / "kernel-pack" / "mono_synth.driver"
     manifest = {
-        "version": 1,
+        "version": 2,
         "code_commit": commit,
+        "worktree_status": worktree_status,
         "runner_sha256": {
             str(Path(__file__).resolve()): hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             str(Path(core.__file__).resolve()): hashlib.sha256(Path(core.__file__).read_bytes()).hexdigest(),
         },
+        "implementation_sha256": implementation_hashes,
+        "driver_sha256": hashlib.sha256(driver.read_bytes()).hexdigest(),
         "base_config_sha256": inputs,
         "experiments": experiments,
         "methods": methods,
         "run_policy": RUN_POLICY | {
             "device": args.device, "pfaces": args.pfaces,
             "warmup_runs": args.warmups, "measured_runs": args.repetitions,
+            "timeout_override": args.timeout,
+            "max_advance_seconds": args.max_advance_seconds,
         },
         "resource_policy": RESOURCE_POLICY,
         "filters": {"examples": args.examples, "scales": args.scales, "methods": args.methods},
@@ -515,26 +612,55 @@ def main() -> int:
     parser.add_argument("--warmups", type=int, default=int(RUN_POLICY["warmup_runs"]))
     parser.add_argument("--repetitions", type=int, default=int(RUN_POLICY["measured_runs"]))
     parser.add_argument("--timeout", type=int, help="Override every per-method timeout")
+    parser.add_argument(
+        "--max-advance-seconds", type=float,
+        default=float(RUN_POLICY["max_advance_seconds"]),
+        help="Advance a method only when every measured wall time is at most this limit",
+    )
     parser.add_argument("--examples", help="Comma-separated keys: acc,acc_5d,turn_ego,turn_oncoming")
-    parser.add_argument("--scales", help="Comma-separated exponents such as 8,9,10 or 1e8,1e9")
+    parser.add_argument(
+        "--N", "--n", "--scales", dest="scales",
+        help=("Override the built-in scales with one or more positive exponents "
+              "such as 8 or 7,8,9 (also accepts 1e8,1e9)"),
+    )
     parser.add_argument("--methods", help="Comma-separated method keys from PAPER_METHODS")
+    parser.add_argument("--cdc-backend", choices=("host", "gpu"), default="host")
+    parser.add_argument(
+        "--cdc-threshold-backend", choices=("host", "gpu"), default="host"
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--keep-outputs", action="store_true")
     args = parser.parse_args()
-    if args.warmups < 0 or args.repetitions <= 0:
-        parser.error("warmups must be nonnegative and repetitions must be positive")
+    if (args.warmups < 0 or args.repetitions <= 0
+            or args.max_advance_seconds <= 0
+            or (args.timeout is not None and args.timeout <= 0)):
+        parser.error(
+            "warmups must be nonnegative; repetitions, timeout, and "
+            "max-advance-seconds must be positive"
+        )
 
     example_filter = parse_csv_filter(args.examples)
-    scale_filter = parse_scale_filter(args.scales)
+    try:
+        scale_filter = parse_scale_filter(args.scales)
+    except ValueError as error:
+        parser.error(str(error))
     method_filter = parse_csv_filter(args.methods)
     experiments = [
         experiment for experiment in PAPER_EXPERIMENTS
         if example_filter is None or experiment["key"] in example_filter
     ]
+    if method_filter is None:
+        selected_keys = {
+            f"cdc_{args.cdc_backend}",
+            f"cdc_threshold_{args.cdc_threshold_backend}",
+            "automatica_scan", "automatica_threshold", "threshold",
+            "bitmap_reference",
+        }
+    else:
+        selected_keys = method_filter
     methods = [
-        method for method in PAPER_METHODS
-        if method_filter is None or method["key"] in method_filter
+        method for method in PAPER_METHODS if method["key"] in selected_keys
     ]
     unknown_examples = (example_filter or set()) - {str(item["key"]) for item in PAPER_EXPERIMENTS}
     unknown_methods = (method_filter or set()) - {str(item["key"]) for item in PAPER_METHODS}
@@ -567,11 +693,12 @@ def main() -> int:
     plans: List[Dict[str, object]] = []
 
     for experiment in experiments:
+        stopped_methods: Dict[str, str] = {}
         base_path = core.repository_path(str(experiment["config"])).resolve()
         base_original = base_path.read_text()
         lower, upper, dimension = parse_geometry(base_original)
         dynamics = config_dynamics_path(base_path, base_original)
-        scales = [scale for scale in experiment["scales"] if scale_filter is None or scale in scale_filter]
+        scales = sorted(experiment["scales"] if scale_filter is None else scale_filter)
         for scale in scales:
             widths = experiment_widths(experiment, scale, dimension)
             eta = eta_for_widths(lower, upper, widths)
@@ -590,6 +717,9 @@ def main() -> int:
             case_plans: List[Dict[str, object]] = []
             for method in methods:
                 plan = plan_method(method, widths, d_star)
+                if str(method["key"]) in stopped_methods:
+                    plan["status"] = "skipped_progression"
+                    plan["reason"] = stopped_methods[str(method["key"])]
                 plan.update({
                     "case": case,
                     "example": experiment["label"],
@@ -602,13 +732,16 @@ def main() -> int:
                 })
                 plans.append(plan)
                 case_plans.append(plan)
-                if plan["status"] == "skipped_resource":
+                if plan["status"] != "planned":
                     continue
-                method_spec = method_by_key(str(plan["run_method"]))
                 config = core.generated_config(
                     base, project, str(plan["method"]), d_star, dynamics,
                     {"max_basis_elements": str(RESOURCE_POLICY["max_basis_elements"])},
-                    str(method_spec["cdc_backend"]), str(plan["transition_backend"]),
+                    cdc_backend=str(method.get("cdc_backend", "gpu")),
+                    cdc_threshold_backend=str(
+                        method.get("cdc_threshold_backend", "host")
+                    ),
+                    transition_backend=str(plan["transition_backend"]),
                 )
                 config_path = case_dir / f"{case}.{plan['run_method']}.cfg"
                 config_path.write_text(config)
@@ -629,15 +762,18 @@ def main() -> int:
             runnable = [str(plan["run_method"]) for plan in case_plans if plan["status"] == "planned"]
             existing_by_key = {raw_key(row): row for row in raw_rows}
             pending = []
-            for sequence, repetition in enumerate(run_ids):
-                order = runnable[sequence % len(runnable):] + runnable[:sequence % len(runnable)]
-                for run_method in order:
-                    key = (case, run_method, repetition)
-                    existing = existing_by_key.get(key)
-                    if existing is None or (
-                        bool(RUN_POLICY["retry_non_ok_on_resume"]) and existing.get("status") != "ok"
-                    ):
-                        pending.append((run_method, repetition))
+            if runnable:
+                for sequence, repetition in enumerate(run_ids):
+                    offset = sequence % len(runnable)
+                    order = runnable[offset:] + runnable[:offset]
+                    for run_method in order:
+                        key = (case, run_method, repetition)
+                        existing = existing_by_key.get(key)
+                        if existing is None or (
+                            bool(RUN_POLICY["retry_non_ok_on_resume"])
+                            and existing.get("status") != "ok"
+                        ):
+                            pending.append((run_method, repetition))
 
             cache_path = case_dir / f"{project}.transitions.u64.v2.bin"
             needs_cache = any(
@@ -649,31 +785,32 @@ def main() -> int:
                 if cache_path.exists():
                     geometry = validate_cache_geometry(cache_path, widths)
                 else:
-                    cache_method = next(
-                        str(plan["run_method"]) for plan in case_plans
-                        if plan["status"] == "planned" and plan["transition_backend"] == "precomputed"
-                        and plan["run_method"] == "threshold"
-                    ) if any(
-                        plan["status"] == "planned" and plan["transition_backend"] == "precomputed"
-                        and plan["run_method"] == "threshold" for plan in case_plans
-                    ) else next(
-                        str(plan["run_method"]) for plan in case_plans
-                        if plan["status"] == "planned" and plan["transition_backend"] == "precomputed"
-                    )
+                    cache_config = case_dir / f"{case}.transition_cache_prep.cfg"
+                    cache_config.write_text(core.generated_config(
+                        base, project, "precompute_only", d_star, dynamics,
+                        {
+                            "max_basis_elements": str(RESOURCE_POLICY["max_basis_elements"]),
+                            "save_controller": "false",
+                        },
+                        transition_backend="precomputed",
+                    ))
                     prep = core.run_once(
-                        case=case, run_method=cache_method, repetition=-999,
-                        config=generated[cache_method], project=project,
-                        output_dir=case_dir, executable=args.pfaces, device=args.device,
-                        verbose=int(RUN_POLICY["verbose"]),
-                        timeout=args.timeout or int(RUN_POLICY["timeouts_seconds"][cache_method]),
+                        case=case, run_method="precompute_only", repetition=-999,
+                        config=cache_config, project=project,
+                        output_dir=case_dir, executable=args.pfaces,
+                        device=args.device, verbose=int(RUN_POLICY["verbose"]),
+                        timeout=args.timeout or int(
+                            RUN_POLICY["timeouts_seconds"]["threshold"]
+                        ),
+                        require_canonical_output=False,
                     )
                     if prep.status != "ok":
                         raise RuntimeError(f"{case} transition-cache preparation failed; see {prep.log}")
                     geometry = validate_cache_geometry(cache_path, widths)
                     case_metadata.setdefault(case, {})["transition_ms"] = prep.transition_ms
-                    case_metadata[case]["cache_prepare_sha256"] = prep.output_sha256
-                    if not args.keep_outputs and not bool(RESOURCE_POLICY["keep_canonical_outputs"]):
-                        Path(prep.output).unlink(missing_ok=True)
+                    case_metadata[case]["cache_prepare_wall_ms"] = prep.wall_ms
+                    case_metadata[case]["cache_prepare_method"] = "precompute_only"
+                    case_metadata[case]["cache_prepare_log"] = prep.log
                 assert geometry is not None
                 if states <= int(RESOURCE_POLICY["max_exhaustive_transition_audit_states"]):
                     audit = core.validate_transition_cache(cache_path, widths)
@@ -724,6 +861,17 @@ def main() -> int:
                 "output_validation": validation,
             })
             metadata_path.write_text(json.dumps(case_metadata, indent=2) + "\n")
+            for plan in case_plans:
+                if plan["status"] != "planned":
+                    continue
+                run_method = str(plan["run_method"])
+                reason = progression_stop_reason(
+                    case, run_method, raw_rows, args.repetitions,
+                    args.max_advance_seconds,
+                )
+                if reason is not None:
+                    stopped_methods[run_method] = reason
+                    print(f"[pruned] {experiment['label']} {run_method}: {reason}", flush=True)
             if cache_path.exists() and not bool(RESOURCE_POLICY["keep_transition_caches"]):
                 cache_path.unlink()
 

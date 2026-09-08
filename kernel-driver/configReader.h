@@ -5,6 +5,7 @@
 #include <pfaces-sdk.h>
 
 enum class SynthesisMethod {
+	PRECOMPUTE_ONLY,
 	CDC,
 	CDC_THRESHOLD,
 	AUTOMATICA_SCAN,
@@ -15,11 +16,13 @@ enum class SynthesisMethod {
 };
 
 enum class TransitionBackend { PRECOMPUTED, INLINE };
+enum class CdcBackend { HOST, GPU };
 enum class CdcThresholdBackend { HOST, GPU };
 enum class BoundarySemantics { STRICT_UNSAFE, FAVORABLE_SATURATING };
 
 const char* synthesisMethodName(SynthesisMethod method);
 const char* transitionBackendName(TransitionBackend backend);
+const char* cdcBackendName(CdcBackend backend);
 const char* cdcThresholdBackendName(CdcThresholdBackend backend);
 const char* boundarySemanticsName(BoundarySemantics semantics);
 
@@ -40,7 +43,7 @@ public:
 private:
 	// Member variables
 	std::string m_defaults;
-	const char* m_schema[824];
+	const char* m_schema[825];
 	static defaultConfiguration s_singleton;
 };
 
@@ -62,6 +65,7 @@ class configReader {
 	bool            m_record_basis_evolution;
 	SynthesisMethod m_synthesis_method;
 	TransitionBackend m_transition_backend;
+	CdcBackend m_cdc_backend;
 	CdcThresholdBackend m_cdc_threshold_backend;
 	BoundarySemantics m_boundary_semantics;
 	std::string     m_transition_semantics;
@@ -187,6 +191,7 @@ public:
 	inline bool isRecordBasisEvolution() const { return m_record_basis_evolution; }
 	inline SynthesisMethod getSynthesisMethod() const { return m_synthesis_method; }
 	inline TransitionBackend getTransitionBackend() const { return m_transition_backend; }
+	inline CdcBackend getCdcBackend() const { return m_cdc_backend; }
 	inline CdcThresholdBackend getCdcThresholdBackend() const { return m_cdc_threshold_backend; }
 	inline BoundarySemantics getBoundarySemantics() const { return m_boundary_semantics; }
 	inline const std::string& getTransitionSemantics() const { return m_transition_semantics; }

@@ -100,7 +100,16 @@ inline void ode_rhs(const float* x, const float* u, const float* w, float* dxdt,
 
 inline void apply_state_constraints(float* x) {
     x[1] = fmax(V_MIN, fmin(x[1], V_MAX));
-    
+
+    // All terminal-success coordinates are semantically equivalent.  Collapse
+    // them to one favorable absorbing corner to preserve the monotone order.
+    if (is_safe_condition(x[0], x[2]) && get_zone(x[2]) >= 3) {
+        x[0] = S_MIN;
+        x[1] = V_MIN;
+        x[2] = S0_MAX;
+        return;
+    }
+
     if (!is_safe_condition(x[0], x[2])) {
         // Map to an unsafe state (outside bounds) -- for "wait" scenario,
         // match the anti-priority: push ego far forward, oncoming far back
