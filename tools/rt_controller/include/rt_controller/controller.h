@@ -9,9 +9,8 @@
  * Safe set integration strategy:
  *   - The objective function includes a large penalty for predicted states
  *     that leave the safe set (bitmap O(1) check per state).
- *   - A post-optimization safety filter overrides the control if the
- *     immediate next state exits the safe set.  This provides a HARD
- *     guarantee regardless of optimizer convergence.
+ *   - The finite penalty informs optimization but does not enforce a hard
+ *     invariant constraint or provide a formal closed-loop safety guarantee.
  *
  * Dependencies: Eigen3, libmpc++ (headers), NLopt
  */

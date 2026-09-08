@@ -1,6 +1,6 @@
 # MonoSafe Real-Time Controller Framework
 
-A general-purpose C++20 framework for **real-time safe control** using monotone safe sets computed by pFaces-MonoSynth. Combines parallel safe-set synthesis with online MPPI control to maintain safety guarantees while tracking performance objectives.
+A C++20 framework for **safety-informed real-time control** using monotone safe sets computed by pFaces-MonoSynth. It combines parallel safe-set synthesis with online MPPI control. The current controller uses finite safe-set penalties; it does not enforce a hard invariant constraint or provide a formal closed-loop safety guarantee.
 
 ## Quick Start
 

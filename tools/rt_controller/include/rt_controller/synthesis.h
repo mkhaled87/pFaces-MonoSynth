@@ -480,6 +480,10 @@ public:
         d_star_ = kernel_meta_->getThresholdDStar();
         key_strides_ = kernel_meta_->getThresholdKeyStrides();
         const auto& grid_sizes = kernel_meta_->getGridSizes();
+        grid_sizes_.assign(grid_sizes.begin(), grid_sizes.end());
+        for (size_t d = 0; d < grid_sizes_.size(); ++d) {
+            if (static_cast<int>(d) != d_star_) key_dimensions_.push_back(d);
+        }
         n_dstar_ = static_cast<int>(grid_sizes[d_star_]);
 
         std::string source = load_kernel_source(params_.kernel_pack + "mono_synth.gpu.cl");
@@ -497,12 +501,15 @@ public:
             throw std::runtime_error("[FastTTInline] OpenCL build failed:\n" + log);
         }
         column_kernel_ = std::make_unique<cl::Kernel>(*program_, "threshold_gfp_step");
+        prefix_kernel_ = std::make_unique<cl::Kernel>(*program_, "threshold_gfp_prefix");
 
         dummy_next_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_ONLY, sizeof(cl_ulong));
         tt_a_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_WRITE, table_size_ * sizeof(cl_uint));
         tt_b_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_WRITE, table_size_ * sizeof(cl_uint));
         parity_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_ONLY, sizeof(cl_uint));
         changed_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_WRITE, sizeof(cl_uint));
+        sweep_params_ = std::make_unique<cl::Buffer>(
+            *context_, CL_MEM_READ_ONLY, 2 * sizeof(cl_ulong));
         runtime_params_ = std::make_unique<cl::Buffer>(*context_, CL_MEM_READ_ONLY, 4 * sizeof(cl_float));
         tt_host_.resize(table_size_);
 
@@ -545,6 +552,22 @@ public:
             queue_->enqueueNDRangeKernel(*column_kernel_, cl::NullRange,
                                          cl::NDRange(static_cast<size_t>(table_size_)),
                                          cl::NullRange);
+            for (size_t d : key_dimensions_) {
+                const cl_ulong sweep[2] = {
+                    static_cast<cl_ulong>(key_strides_[d]),
+                    static_cast<cl_ulong>(grid_sizes_[d])};
+                queue_->enqueueWriteBuffer(
+                    *sweep_params_, CL_FALSE, 0, sizeof(sweep), sweep);
+                prefix_kernel_->setArg(0, *tt_a_);
+                prefix_kernel_->setArg(1, *tt_b_);
+                prefix_kernel_->setArg(2, *parity_);
+                prefix_kernel_->setArg(3, *sweep_params_);
+                prefix_kernel_->setArg(4, *changed_);
+                queue_->enqueueNDRangeKernel(
+                    *prefix_kernel_, cl::NullRange,
+                    cl::NDRange(static_cast<size_t>(table_size_ / grid_sizes_[d])),
+                    cl::NullRange);
+            }
             queue_->enqueueReadBuffer(*changed_, CL_TRUE, 0, sizeof(changed), &changed);
             ++iterations;
             if (changed == 0)
@@ -646,17 +669,21 @@ private:
     std::shared_ptr<mono_synth::pfacesKernel_mono_synth> kernel_meta_;
     std::unique_ptr<cl::Program> program_;
     std::unique_ptr<cl::Kernel> column_kernel_;
+    std::unique_ptr<cl::Kernel> prefix_kernel_;
     std::unique_ptr<cl::Buffer> dummy_next_;
     std::unique_ptr<cl::Buffer> tt_a_;
     std::unique_ptr<cl::Buffer> tt_b_;
     std::unique_ptr<cl::Buffer> parity_;
     std::unique_ptr<cl::Buffer> changed_;
+    std::unique_ptr<cl::Buffer> sweep_params_;
     std::unique_ptr<cl::Buffer> runtime_params_;
     std::vector<uint32_t> tt_host_;
     uint64_t table_size_ = 0;
     int d_star_ = 0;
     int n_dstar_ = 0;
     std::vector<uint64_t> key_strides_;
+    std::vector<uint64_t> grid_sizes_;
+    std::vector<size_t> key_dimensions_;
 };
 
 #endif  // HAS_PFACES_SDK

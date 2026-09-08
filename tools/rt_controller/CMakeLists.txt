@@ -83,7 +83,7 @@ endif()
 # --- libmpc++ (header-only, fetched from GitHub) ---
 FetchContent_Declare(libmpc
     GIT_REPOSITORY https://github.com/nicolapiccinelli/libmpc.git
-    GIT_TAG        master
+    GIT_TAG        d2c0352ced8e41d92f9d658a3c8d91693920f261
     GIT_SHALLOW    TRUE
     CONFIGURE_COMMAND ""
     BUILD_COMMAND ""
@@ -172,7 +172,7 @@ if(USE_PFACES_SDK AND PFACES_SDK_LIB)
         # Fetch OpenCL-CLHPP if not found
         FetchContent_Declare(openclhpp
             GIT_REPOSITORY https://github.com/KhronosGroup/OpenCL-CLHPP.git
-            GIT_TAG        main
+            GIT_TAG        f3804e516fadfbca55c9a02a0f9b895aa1c4100f
             GIT_SHALLOW    TRUE
         )
         FetchContent_GetProperties(openclhpp)
@@ -233,6 +233,12 @@ endif()
 # Install
 # ===========================================================================
 install(TARGETS rt_controller RUNTIME DESTINATION bin)
+
+option(RT_CONTROLLER_BUILD_TESTING "Enable RT controller smoke tests" ON)
+if(RT_CONTROLLER_BUILD_TESTING)
+    enable_testing()
+    add_test(NAME rt_controller_help COMMAND rt_controller --help)
+endif()
 
 # ===========================================================================
 # Config summary
