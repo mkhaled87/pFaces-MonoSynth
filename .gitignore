@@ -1,5 +1,6 @@
 build/
 .vs/
+.vscode/
 .settings/
 .DS_Store
 **/.DS_Store
