@@ -187,11 +187,6 @@ The manifest fingerprint prevents accidental resume after changing the code,
 matrix, device, repetition policy, or resource limits. Use `--no-resume` only
 when targeting a new, empty output directory.
 
-`benchmark_bitmap_gfp_acc.py` and `check_bitmap_gfp_acc.py` remain focused tools
-for the explicit `bitmap_reference` and `threshold_cpu_reference` modes.
-The equality checker also accepts a custom monotone fixture through
-`--cfg PATH --output-dir PATH`.
-
 `threshold_cpu_reference` is intentionally omitted from the default visible
 paper matrix. Run `run_solver_benchmark.py --include-references` when an
 independent CPU threshold oracle is desired on a manageable grid.
