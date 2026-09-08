@@ -1,4 +1,0 @@
-**/__pycache__
-**/*.pyc
-project/build
-project/kernel-pack/*.driver
