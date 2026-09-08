@@ -34,18 +34,21 @@ This method provides:
   <tr>
     <td align="center">
       <b>ACC Basis Evolution</b><br/>
-      <video src="./figures/acc_fine_basis_viridis_light.mp4" width="460" controls autoplay loop muted playsinline></video>
+      <img src="./figures/acc_fine_basis_viridis_light.gif" width="460" alt="ACC basis evolution" /><br/>
+      <a href="./figures/acc_fine_basis_viridis_light.mp4">full video</a>
     </td>
     <td align="center">
       <b>ACC Threshold Evolution</b><br/>
-      <video src="./figures/acc_fine_tt_viridis_light.mp4" width="460" controls autoplay loop muted playsinline></video>
+      <img src="./figures/acc_fine_tt_viridis_light.gif" width="460" alt="ACC threshold evolution" /><br/>
+      <a href="./figures/acc_fine_tt_viridis_light.mp4">full video</a>
     </td>
   </tr>
 </table>
 
 <p align="center">
   <b>Real-Time Left-Turn Controller</b><br/>
-  <video src="./figures/intersection.mp4" width="760" controls autoplay loop muted playsinline></video>
+  <img src="./figures/intersection.gif" width="760" alt="Real-time left-turn controller" /><br/>
+  <a href="./figures/intersection.mp4">full video</a>
 </p>
 
 <p align="center">
