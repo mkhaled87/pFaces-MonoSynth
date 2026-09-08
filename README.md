@@ -1,16 +1,32 @@
-# pFaces-MonoSafe Threshold Experiments
+# pFaces-MonoSynth: Real-Time Synthesis of Robust Controlled Invariant Sets for Monotone Systems
 
-**Real-time invariant-set synthesis for monotone systems.** This repository
-contains the threshold-table and real-time controller experiments
-behind the paper implementation.
+Safety-critical autonomy needs formal safety certificates — controlled
+invariant sets — recomputed online as conditions change. Classical symbolic
+greatest-fixed-point (GFP) computation scales poorly with state dimension,
+so real-time synthesis is usually out of reach.
 
-The method stores one threshold height per grid column along
-`threshold_d_star`, so safe-set membership is an `O(1)` lookup with
-`O(N^(d-1))` storage instead of full-grid storage or basis scans.
+For monotone dynamics with lower-closed safety specs, the maximal robust
+controlled invariant set is itself lower-closed and fully described by its
+boundary. Lazy basis methods exploit this by tracking only the antichain
+basis, but every iteration still scans the basis for each membership test
+and regenerates neighbors sequentially, which is the main bottleneck at scale.
 
-The paper runner compares six implementations: host CDC scan, host CDC with
-threshold indexing, GPU Automatica with scan or threshold membership, bitmap
-GFP, and the proposed column-wise threshold GFP.
+This repo implements our paper's **threshold-function reformulation**: a
+lower-closed set on a `d`-dimensional grid is stored as one column height
+per key along a designated axis. One GFP step then becomes an independent
+one-dimensional binary search per column. Intuition: instead of maintaining
+a moving basis frontier, each column independently asks "how high can this
+column stay safe?" with `O(1)` table lookups without basis scans or neighbor
+generation.
+
+This method provides:
+
+* **`O(1)` lookup, `O(N^(d-1))` storage** — one integer per column instead of the full `O(N^d)` grid or per-query basis scans.
+* **Embarrassingly parallel** — all columns update independently; per-iteration work `O(C·N^(d-1)·log N)` with no sequential neighbor generation (lazy: `O(C·N^(2(d-1)))` sequential over an evolving basis).
+* **Real-time capable** — `10^9` cells in under 50 ms, `10^14` cells in under two minutes; `10^10`-cell closed-loop re-synthesis in ~62–77 ms.
+* **Thousands-fold speedups** — orders of magnitude faster than basis-based lazy synthesis at matched grids.
+* **Real-time example** — Safety-informed MPPI demo that re-synthesizes online.
+* **Parallel implementation** — A parallel OpenCL implementation using pFaces for maximum speed on GPUs.
 
 ## Preview
 
@@ -32,22 +48,22 @@ GFP, and the proposed column-wise threshold GFP.
   <video src="./figures/intersection.mp4" width="760" controls autoplay loop muted playsinline></video>
 </p>
 
-## Method
+<p align="center">
+  <img src="./figures/threshold.png" width="460" alt="Threshold-table representation" />
+  <img src="./figures/speedups.png" width="460" alt="Paper speedup table" />
+</p>
 
-<img src="./figures/threshold.png" width="460" alt="Threshold-table representation"> 
+## 1. Install pFaces First
 
-<img src="./figures/speedups.png" width="460" alt="Threshold speedups"> 
-
-## Setup
-
-Install pFaces and expose both the CLI and SDK:
+You need an external pFaces installation before anything else:
 
 ```bash
 export PFACES_SDK_ROOT=/path/to/pfaces-sdk
-export PATH=/path/to/pfaces/bin:$PATH$PATH
+export PATH=/path/to/pfaces/bin:$PATH
+pfaces -G -l   # note your GPU id, e.g. 0
 ```
 
-Ubuntu packages and Python environment:
+Then system deps and this kernel driver:
 
 ```bash
 sudo apt-get update
@@ -57,98 +73,83 @@ sudo apt-get install -y build-essential cmake git ocl-icd-opencl-dev clinfo \
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip numpy pandas matplotlib
-```
-
-Build the pFaces kernel driver and list the GPU id used by the pFaces CLI:
-
-```bash
-sh build.sh
-pfaces -G -l
-```
-
-## Reproduce the Paper Experiments
-
-The release runner executes the exact progressive protocol used for the revised
-paper: host CDC scan, host CDC with threshold indexing, both GPU Automatica
-variants, bitmap GFP, and threshold GFP. It covers ACC, ACC-5D, Turn-Ego, and
-Turn-Oncoming from the smallest scale upward.
-
-After installing pFaces and building the kernel driver, select the GPU reported
-by `pfaces -G -l` and run:
-
-```bash
-export PFACES_SDK_ROOT=/path/to/pfaces-sdk
-export PATH=/path/to/pfaces/bin:$PATH
-export PFACES_DEVICE=0
 
 sh build.sh
-./tools/run_paper_experiments.sh
 ```
 
-The optional first argument selects the output directory. Reuse it to resume an
-interrupted experiment:
+## 2. Try ACC in 2 Minutes (Start Here)
 
-```bash
-./tools/run_paper_experiments.sh tools/benchmark_results/paper_scale_run
-```
-
-The runner performs one measured execution with no warm-up, uses a 20-minute
-per-run timeout, and advances a method only when its preceding wall time is at
-most 60 seconds. It prepares and validates each reusable successor cache once.
-Threshold GFP and bitmap GFP evaluate dynamics inline.
-
-Every run is checkpointed. The result directory contains the complete 156-row
-plan, raw logs and timings, validation metadata, CSV summaries, and Markdown
-and LaTeX tables. Skips and timeouts remain explicit. Successful methods on a
-shared grid must agree in canonical output hash and safe-cell count.
-
-Advanced method, example, and scale selection is documented in
-[tools/README.md](tools/README.md).
-
-## Run One Synthesis
-
-Use the standalone launcher for a single configuration:
+Runs threshold synthesis on the small ACC example and renders the animation:
 
 ```bash
 ./run_threshold_synthesis.sh \
   --cfg examples/acc/acc.cfg \
   --mode threshold \
   --device-class G \
-  --device 0
+  --device 0 \
+  --video
 ```
 
-Grid resolution is controlled by `states.eta`; `threshold_d_star` selects the
-threshold dimension. See [tools/README.md](tools/README.md) for all solver and
-benchmark options.
+Output: `examples/acc/threshold_evolution.mp4` plus the evolution CSV.
+Swap `--mode threshold` for `--mode cdc` to see the classical basis version.
 
-## Real-Time Controller
+## 3. Quick Method Check
 
-The C++20 controller combines online threshold synthesis with MPPI and supports
-ACC, both single-vehicle turn phases, and the two-oncoming demonstration. Build
-and run the complete two-oncoming example with:
+A coarse threshold-vs-reference comparison on the same ACC grid:
+
+```bash
+python3 tools/run_solver_benchmark.py \
+  examples/acc/acc.cfg \
+  --methods threshold,bitmap_reference \
+  --state-eta 4,2,2 \
+  --device 0 \
+  --warmups 0 \
+  --repetitions 1 \
+  --output tools/benchmark_results/acc_smoke
+```
+
+Passing means both methods agree on the safe set; timings and logs go to
+the output directory. All solver options are in [tools/README.md](tools/README.md).
+
+## 4. Full Paper-Scale Experiments
+
+This command reproduces the paper figure runs (host CDC scan, host
+CDC-threshold, two GPU Automatica variants, bitmap GFP, threshold GFP)
+over ACC, ACC-5D, Turn-Ego and Turn-Oncoming, smallest scale first:
+
+```bash
+export PFACES_SDK_ROOT=/path/to/pfaces-sdk
+export PATH=/path/to/pfaces/bin:$PATH
+export PFACES_DEVICE=0
+
+./tools/run_paper_experiments.sh
+```
+
+Resume an interrupted run by reusing the output directory:
+
+```bash
+./tools/run_paper_experiments.sh tools/benchmark_results/paper_scale_run
+```
+
+One measured run per case, 20-minute per-run timeout; results, logs, CSVs and LaTeX tables are checkpointed per method.
+See [tools/README.md](tools/README.md) for scales and validation rules.
+
+Note: This experiment is expected to take multiple hours depending on your machine.
+
+## 5. Real-Time Controller
+
+You can also run online threshold synthesis + MPPI for the two-oncoming vehicles demo detailed in the paper:
 
 ```bash
 cd tools/rt_controller
 ./scripts/run_two_oncoming_threshold_rt.sh
 ```
 
-The script produces CSV logs, plots, and the left-turn animation. Dependencies,
-configuration fields, and shorter smoke commands are in the
-[RT controller guide](tools/rt_controller/README.md).
+Produces CSV logs, plots and the left-turn animation. See the
+[RT controller guide](tools/rt_controller/README.md) for deps and options.
 
-The controller uses finite safe-set penalties during optimization. It does not
-enforce a hard invariant constraint and does not provide a formal closed-loop
-safety guarantee.
-
-## Paper Sources
-
-The submitted manuscript, revised manuscript, rebuttal, and bibliography are in
-[`docs/`](docs/). Build the revised paper with:
-
-```bash
-cd docs
-latexmk -pdf lcss_revised.tex
-```
+Note: the controller uses finite safe-set penalties, not a hard invariant
+constraint, and provides no formal closed-loop safety guarantee.
 
 ## License
 
